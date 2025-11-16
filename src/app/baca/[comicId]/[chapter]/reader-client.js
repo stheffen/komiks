@@ -21,7 +21,9 @@ export default function ReaderClient({ comic, startChapterNumber }) {
     <div className="space-y-6">
       <header className="flex flex-wrap items-center justify-between gap-4 rounded-3xl border border-zinc-200 bg-white px-5 py-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
         <div>
-          <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-100">{comic.title}</h1>
+          <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-100">
+            {comic.title}
+          </h1>
           <p className="text-sm text-zinc-500 dark:text-zinc-400">
             Chapter awal: {startChapterNumber}
           </p>
@@ -56,4 +58,3 @@ export default function ReaderClient({ comic, startChapterNumber }) {
     </div>
   );
 }
-

@@ -1,145 +1,212 @@
-const makeChapters = (seed, totalChapters = 8, pagesPerChapter = 6) => {
-  return Array.from({ length: totalChapters }, (_, chapterIndex) => {
-    const number = chapterIndex + 1;
+import {
+  getTopComics,
+  getComicsList,
+  searchComics as apiSearchComics,
+  getComicChapters,
+  getChapterDetail,
+  mapApiMangaToComic,
+  mapApiChapterToChapter,
+} from "@/services/api";
+
+// Cache for comics data
+let cachedComics = [];
+let comicsCacheInitialized = false;
+
+/**
+ * Initialize comics cache with top comics
+ */
+export async function initializeComics() {
+  if (comicsCacheInitialized) {
+    return cachedComics;
+  }
+
+  try {
+    const response = await getTopComics(1, 50);
+    if (response.retcode === 0 && response.data) {
+      cachedComics = response.data.map(mapApiMangaToComic);
+      comicsCacheInitialized = true;
+    }
+  } catch (error) {
+    console.error("Error initializing comics:", error);
+    cachedComics = [];
+  }
+  return cachedComics;
+}
+
+/**
+ * Get all comics (from cache or fetch)
+ */
+export async function getComics() {
+  if (!comicsCacheInitialized) {
+    await initializeComics();
+  }
+  return cachedComics;
+}
+
+/**
+ * Get comic by ID
+ * @param {string} id - Comic ID
+ * @returns {Promise<Object|null>} Comic object or null
+ */
+export async function getComicById(id) {
+  // First check cache
+  const cached = cachedComics.find((comic) => comic.id === id);
+  if (cached) {
+    return cached;
+  }
+
+  // If not in cache, try to fetch from list
+  try {
+    const response = await getComicsList(1, 100);
+    if (response.retcode === 0 && response.data) {
+      const comics = response.data.map(mapApiMangaToComic);
+      cachedComics = [...cachedComics, ...comics];
+      const found = comics.find((comic) => comic.id === id);
+      if (found) return found;
+    }
+  } catch (error) {
+    console.error("Error fetching comic by ID:", error);
+  }
+
+  return null;
+}
+
+/**
+ * Search comics
+ * @param {string} term - Search term
+ * @returns {Promise<Array>} Array of comics
+ */
+export async function searchComics(term) {
+  if (!term || term.trim() === "") {
+    return await getComics();
+  }
+
+  try {
+    const response = await apiSearchComics(term.trim());
+    if (response.retcode === 0 && response.data) {
+      return response.data.map(mapApiMangaToComic);
+    }
+    return [];
+  } catch (error) {
+    console.error("Error searching comics:", error);
+    return [];
+  }
+}
+
+/**
+ * Get comic with chapters loaded
+ * @param {string} id - Comic ID
+ * @returns {Promise<Object|null>} Comic with chapters
+ */
+export async function getComicWithChapters(id) {
+  const comic = await getComicById(id);
+  if (!comic) return null;
+
+  try {
+    const response = await getComicChapters(id);
+    if (response.retcode === 0 && response.data) {
+      const chapters = response.data.map((ch) =>
+        mapApiChapterToChapter(ch, id)
+      );
+      return {
+        ...comic,
+        chapters: chapters,
+      };
+    }
+  } catch (error) {
+    console.error("Error fetching comic chapters:", error);
+  }
+
+  // Return comic without chapters if fetch fails
+  return {
+    ...comic,
+    chapters: [],
+  };
+}
+
+/**
+ * Get chapter with pages for reading
+ * @param {string} chapterId - Chapter ID
+ * @returns {Promise<Object|null>} Chapter with pages
+ */
+// export async function getChapterWithPages(chapterId) {
+//   try {
+//     const response = await getChapterDetail(chapterId);
+//     if (response.retcode === 0 && response.data) {
+//       const chapterData = response.data;
+//       const baseUrl = chapterData.base_url_low || chapterData.base_url;
+//       const path = chapterData.chapter?.path || "";
+//       const pages = (chapterData.chapter?.data || []).map(
+//         (page) => `${baseUrl}${path}${page}`
+//       );
+//       console.log(response.data);
+//       return {
+//         id: chapterData.chapter_id,
+//         mangaId: chapterData.manga_id,
+//         number: chapterData.chapter_number,
+//         title:
+//           chapterData.chapter_title || `Chapter ${chapterData.chapter_number}`,
+//         pages: pages,
+//         prevChapterId: chapterData.prev_chapter_id,
+//         prevChapterNumber: chapterData.prev_chapter_number,
+//         nextChapterId: chapterData.next_chapter_id,
+//         nextChapterNumber: chapterData.next_chapter_number,
+//       };
+//     }
+//   } catch (error) {
+//     console.error("Error fetching chapter detail:", error);
+//   }
+
+//   return null;
+// }
+// data/comics.js
+export async function getChapterWithPages(chapterId) {
+  try {
+    const chapterData = await getChapterDetail(chapterId); // sekarang langsung data
+    if (!chapterData) return null;
+
+    // Prioritaskan base_url_low jika ada (lebih kecil/dioptimalkan)
+    const baseUrl = chapterData.base_url_low || chapterData.base_url || "";
+    const path = chapterData.chapter?.path || "";
+    const files = Array.isArray(chapterData.chapter?.data)
+      ? chapterData.chapter.data
+      : [];
+
+    const pages = files.map((filename) => {
+      // jika filename sudah absolute (jarang), kembalikan langsung
+      if (/^https?:\/\//i.test(filename)) return filename;
+      try {
+        // new URL menggabungkan baseUrl + path + filename dengan benar
+        return new URL(`${path}${filename}`, baseUrl).toString();
+      } catch (e) {
+        // fallback aman bila new URL gagal
+        return `${baseUrl.replace(/\/$/, "")}/${path
+          .replace(/^\//, "")
+          .replace(/\/$/, "")}/${filename.replace(/^\//, "")}`;
+      }
+    });
+
+    // Debug: periksa hasil (hapus/log level nanti)
+    console.log("[getChapterWithPages] chapterId:", chapterId);
+    console.log("[getChapterWithPages] pages:", pages.slice(0, 5)); // tampilkan beberapa saja
+
     return {
-      id: `${seed}-chapter-${number}`,
-      number,
-      title: `Chapter ${number}`,
-      pages: Array.from({ length: pagesPerChapter }, (_, pageIndex) => {
-        return `https://picsum.photos/seed/${seed}-${number}-${pageIndex + 1}/900/1400`;
-      }),
+      id: chapterData.chapter_id,
+      mangaId: chapterData.manga_id,
+      number: chapterData.chapter_number,
+      title:
+        chapterData.chapter_title || `Chapter ${chapterData.chapter_number}`,
+      pages,
+      prevChapterId: chapterData.prev_chapter_id,
+      prevChapterNumber: chapterData.prev_chapter_number,
+      nextChapterId: chapterData.next_chapter_id,
+      nextChapterNumber: chapterData.next_chapter_number,
     };
-  });
-};
+  } catch (error) {
+    console.error("Error in getChapterWithPages:", error);
+    return null;
+  }
+}
 
-const meta = [
-  {
-    id: "stellar-guardian",
-    title: "Stellar Guardian",
-    origin: "Korea",
-    genres: ["Action", "Fantasy", "Sci-Fi"],
-    synopsis:
-      "Ketika sebuah kota terapung diserang oleh makhluk misterius, seorang penjaga muda menemukan rahasia kosmik yang dapat menyelamatkan semua orang.",
-    totalChapters: 10,
-  },
-  {
-    id: "aurora-melody",
-    title: "Aurora Melody",
-    origin: "Japan",
-    genres: ["Drama", "Romance", "Music"],
-    synopsis:
-      "Seorang penyanyi jalanan dengan suara aurora berjuang menemukan panggung impiannya, sementara bertemu sahabat dari masa kecil yang terlupakan.",
-    totalChapters: 12,
-  },
-  {
-    id: "cyber-delinquent",
-    title: "Cyber Delinquent",
-    origin: "USA",
-    genres: ["Cyberpunk", "Thriller"],
-    synopsis:
-      "Di kota futuristik, seorang peretas remaja terjebak dalam konspirasi korporasi yang mengancam memutus koneksi semua orang dari dunia maya.",
-    totalChapters: 9,
-  },
-  {
-    id: "evergreen-saga",
-    title: "Evergreen Saga",
-    origin: "China",
-    genres: ["Adventure", "Fantasy"],
-    synopsis:
-      "Dua saudara menyeberangi hutan abadi mencari air kehidupan demi menyelamatkan desa mereka dari kutukan kekeringan.",
-    totalChapters: 11,
-  },
-  {
-    id: "neon-temple",
-    title: "Neon Temple",
-    origin: "Japan",
-    genres: ["Mystery", "Supernatural"],
-    synopsis:
-      "Kuil modern dengan cahaya neon menyimpan pintu ke dunia roh, dan penjaganya harus menyeimbangkan kehidupan saat ini dengan masa lalu yang menghantuinya.",
-    totalChapters: 8,
-  },
-  {
-    id: "desert-riders",
-    title: "Desert Riders",
-    origin: "Indonesia",
-    genres: ["Action", "Post-Apocalyptic"],
-    synopsis:
-      "Di masa depan gurun tak berujung, para pengendara motor mencari oasis legendaris sambil melawan geng yang haus kekuasaan.",
-    totalChapters: 14,
-  },
-  {
-    id: "tidebound",
-    title: "Tidebound",
-    origin: "Philippines",
-    genres: ["Adventure", "Mythology"],
-    synopsis:
-      "Seorang pelaut muda dapat berbicara dengan roh laut dan harus menghentikan badai abadi yang mengancam nusantara.",
-    totalChapters: 7,
-  },
-  {
-    id: "clockwork-soul",
-    title: "Clockwork Soul",
-    origin: "France",
-    genres: ["Steampunk", "Drama"],
-    synopsis:
-      "Penemu berbakat membuat replika hati mekanis untuk kakaknya, namun harus berpacu dengan waktu sebelum energi kota menghilang.",
-    totalChapters: 9,
-  },
-  {
-    id: "shadow-market",
-    title: "Shadow Market",
-    origin: "Singapore",
-    genres: ["Crime", "Thriller"],
-    synopsis:
-      "Pasar malam tersembunyi menjadi tempat transaksi waktu, dan seorang broker rahasia mempertaruhkan hidupnya untuk membebaskan adiknya.",
-    totalChapters: 10,
-  },
-  {
-    id: "lunar-academy",
-    title: "Lunar Academy",
-    origin: "Malaysia",
-    genres: ["School", "Sci-Fi"],
-    synopsis:
-      "Di akademi ilmiah di permukaan bulan, siswa baru menemukan misteri tentang mengapa generasi sebelumnya menghilang secara tiba-tiba.",
-    totalChapters: 8,
-  },
-  {
-    id: "forest-of-echoes",
-    title: "Forest of Echoes",
-    origin: "Canada",
-    genres: ["Fantasy", "Mystery"],
-    synopsis:
-      "Hutan yang memantulkan suara hati, seorang gadis penjelajah mencoba menyembuhkan trauma masyarakatnya dengan mendengarkan gema masa lalu.",
-    totalChapters: 6,
-  },
-  {
-    id: "crimson-samurai",
-    title: "Crimson Samurai",
-    origin: "Japan",
-    genres: ["Historical", "Action"],
-    synopsis:
-      "Seorang samurai wanita dengan armor merah darah berjuang menebus kesalahan klannya sambil menghadapi ancaman perang saudara.",
-    totalChapters: 13,
-  },
-];
-
-export const comics = meta.map((item) => ({
-  ...item,
-  cover: `https://picsum.photos/seed/${item.id}-cover/400/600`,
-  chapters: makeChapters(item.id, item.totalChapters, 7),
-}));
-
-export const getComicById = (id) => comics.find((comic) => comic.id === id);
-
-export const searchComics = (term) => {
-  if (!term) return comics;
-  const normalized = term.trim().toLowerCase();
-  return comics.filter((comic) => {
-    return (
-      comic.title.toLowerCase().includes(normalized) ||
-      comic.genres.some((genre) => genre.toLowerCase().includes(normalized)) ||
-      comic.origin.toLowerCase().includes(normalized)
-    );
-  });
-};
-
+// For backward compatibility, export empty array initially
+export const comics = [];

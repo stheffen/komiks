@@ -1,7 +1,8 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { getComicWithChapters } from "@/data/comics";
 
 export default function ComicDetailDialog({
   comic,
@@ -11,6 +12,9 @@ export default function ComicDetailDialog({
   onToggleLibrary,
   isInLibrary,
 }) {
+  const [comicWithChapters, setComicWithChapters] = useState(null);
+  const [chaptersLoading, setChaptersLoading] = useState(false);
+
   useEffect(() => {
     if (!isOpen) return;
     const originalOverflow = document.body.style.overflow;
@@ -20,7 +24,38 @@ export default function ComicDetailDialog({
     };
   }, [isOpen]);
 
+  // Load chapters when dialog opens
+  useEffect(() => {
+    if (!isOpen || !comic) {
+      setComicWithChapters(null);
+      return;
+    }
+
+    // If comic already has chapters, use them
+    if (comic.chapters && comic.chapters.length > 0) {
+      setComicWithChapters(comic);
+      return;
+    }
+
+    // Otherwise fetch chapters
+    setChaptersLoading(true);
+    getComicWithChapters(comic.id)
+      .then((comicData) => {
+        setComicWithChapters(comicData || comic);
+      })
+      .catch((error) => {
+        console.error("Error loading chapters:", error);
+        setComicWithChapters(comic);
+      })
+      .finally(() => {
+        setChaptersLoading(false);
+      });
+  }, [isOpen, comic]);
+
   if (!isOpen || !comic) return null;
+
+  const displayComic = comicWithChapters || comic;
+  const chapters = displayComic.chapters || [];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/70 px-4 py-8 backdrop-blur-sm">
@@ -48,8 +83,12 @@ export default function ComicDetailDialog({
               <p className="text-sm uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
                 {comic.origin}
               </p>
-              <h2 className="text-2xl font-bold text-zinc-900 dark:text-white">{comic.title}</h2>
-              <p className="text-sm text-zinc-600 dark:text-zinc-300">{comic.synopsis}</p>
+              <h2 className="text-2xl font-bold text-zinc-900 dark:text-white">
+                {comic.title}
+              </h2>
+              <p className="text-sm text-zinc-600 dark:text-zinc-300">
+                {comic.synopsis}
+              </p>
             </header>
             <section className="flex flex-wrap gap-2 text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
               {comic.genres.map((genre) => (
@@ -79,22 +118,45 @@ export default function ComicDetailDialog({
                 </button>
               </div>
               <ul className="flex max-h-48 flex-col gap-2 overflow-y-auto pr-1 text-sm">
-                {comic.chapters.map((chapter) => (
-                  <li key={chapter.id}>
-                    <button
-                      type="button"
-                      onClick={() => onStartReading?.(chapter.number)}
-                      className="flex w-full items-center justify-between rounded-xl border border-zinc-200 px-4 py-2 text-left transition hover:border-zinc-400 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:border-zinc-500 dark:hover:bg-zinc-800"
-                    >
-                      <span className="font-medium text-zinc-800 dark:text-zinc-200">
-                        Chapter {chapter.number}
-                      </span>
-                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                        {chapter.pages.length} halaman
-                      </span>
-                    </button>
+                {chaptersLoading ? (
+                  <li className="py-4 text-center text-sm text-zinc-500 dark:text-zinc-400">
+                    Memuat daftar chapter...
                   </li>
-                ))}
+                ) : chapters.length === 0 ? (
+                  <li className="py-4 text-center text-sm text-zinc-500 dark:text-zinc-400">
+                    Tidak ada chapter tersedia
+                  </li>
+                ) : (
+                  chapters.map((chapter) => (
+                    <li key={chapter.chapter_id}>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onStartReading?.(chapter.id || chapter.chapter_id)
+                        }
+                        className="flex w-full items-center justify-between rounded-xl border border-zinc-200 px-4 py-2 text-left transition hover:border-zinc-400 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:border-zinc-500 dark:hover:bg-zinc-800"
+                      >
+                        <span className="font-medium text-zinc-800 dark:text-zinc-200">
+                          Chapter {chapter.number || chapter.chapter_number}
+                          {chapter.title &&
+                            chapter.title !==
+                              `Chapter ${
+                                chapter.number || chapter.chapter_number
+                              }` && (
+                              <span className="ml-2 text-xs text-zinc-500">
+                                - {chapter.title}
+                              </span>
+                            )}
+                        </span>
+                        <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                          {chapter.pages?.length
+                            ? `${chapter.pages.length} halaman`
+                            : "Tersedia"}
+                        </span>
+                      </button>
+                    </li>
+                  ))
+                )}
               </ul>
             </section>
           </div>
@@ -103,4 +165,3 @@ export default function ComicDetailDialog({
     </div>
   );
 }
-

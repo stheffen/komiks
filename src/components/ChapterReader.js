@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getChapterWithPages } from "@/data/comics";
 
 const TOP_BUFFER = 180;
 const BOTTOM_BUFFER = 180;
@@ -12,11 +13,67 @@ export default function ChapterReader({ comic, startChapterNumber = 1, onProgres
   const [visibleChapters, setVisibleChapters] = useState(() => [startChapterNumber]);
   const [activeChapter, setActiveChapter] = useState(startChapterNumber);
   const [activePage, setActivePage] = useState(1);
+  const [chaptersWithPages, setChaptersWithPages] = useState({});
+  const [loadingChapters, setLoadingChapters] = useState(new Set());
 
   const chapterNumbers = useMemo(
-    () => comic.chapters.map((chapter) => chapter.number),
+    () => comic.chapters.map((chapter) => chapter.number || chapter.chapter_number),
     [comic.chapters]
   );
+
+  // Find chapter by number
+  const findChapter = useCallback(
+    (number) => {
+      return comic.chapters.find(
+        (ch) => (ch.number || ch.chapter_number) === number
+      );
+    },
+    [comic.chapters]
+  );
+
+  // Load chapter pages
+  const loadChapterPages = useCallback(async (chapterNumber) => {
+    const chapter = findChapter(chapterNumber);
+    if (!chapter) return;
+
+    const chapterId = chapter.id || chapter.chapter_id;
+    if (!chapterId) return;
+
+    // If already loaded or loading, skip
+    if (chaptersWithPages[chapterNumber] || loadingChapters.has(chapterNumber)) {
+      return;
+    }
+
+    setLoadingChapters((prev) => new Set(prev).add(chapterNumber));
+
+    try {
+      const chapterData = await getChapterWithPages(chapterId);
+      if (chapterData && chapterData.pages) {
+        setChaptersWithPages((prev) => ({
+          ...prev,
+          [chapterNumber]: {
+            ...chapter,
+            pages: chapterData.pages,
+          },
+        }));
+      }
+    } catch (error) {
+      console.error(`Error loading chapter ${chapterNumber}:`, error);
+    } finally {
+      setLoadingChapters((prev) => {
+        const next = new Set(prev);
+        next.delete(chapterNumber);
+        return next;
+      });
+    }
+  }, [findChapter, chaptersWithPages, loadingChapters]);
+
+  // Load pages for visible chapters
+  useEffect(() => {
+    visibleChapters.forEach((number) => {
+      loadChapterPages(number);
+    });
+  }, [visibleChapters, loadChapterPages]);
 
   useEffect(() => {
     if (containerRef.current) {
@@ -98,10 +155,19 @@ export default function ChapterReader({ comic, startChapterNumber = 1, onProgres
   const sortedVisibleChapters = useMemo(
     () =>
       [...visibleChapters]
-        .map((number) => comic.chapters.find((chapter) => chapter.number === number))
+        .map((number) => {
+          const chapter = findChapter(number);
+          if (!chapter) return null;
+          // Use chapter with pages if available, otherwise use original
+          return chaptersWithPages[number] || chapter;
+        })
         .filter(Boolean)
-        .sort((a, b) => b.number - a.number),
-    [visibleChapters, comic.chapters]
+        .sort((a, b) => {
+          const numA = a.number || a.chapter_number;
+          const numB = b.number || b.chapter_number;
+          return numB - numA;
+        }),
+    [visibleChapters, findChapter, chaptersWithPages]
   );
 
   return (
@@ -135,33 +201,45 @@ export default function ChapterReader({ comic, startChapterNumber = 1, onProgres
         <div className="flex flex-col gap-12 px-4 py-10 sm:px-8">
           {sortedVisibleChapters.map((chapter) => (
             <section
-              key={chapter.id}
-              data-chapter={chapter.number}
+              key={chapter.id || chapter.chapter_id}
+              data-chapter={chapter.number || chapter.chapter_number}
               className="space-y-6"
             >
               <div className="sticky top-4 z-20 flex items-center justify-between rounded-full bg-white/90 px-4 py-2 text-sm font-semibold text-zinc-700 shadow dark:bg-zinc-900/90 dark:text-zinc-200">
-                <span>Chapter {chapter.number}</span>
-                <span>{chapter.pages.length} halaman</span>
+                <span>Chapter {chapter.number || chapter.chapter_number}</span>
+                <span>
+                  {loadingChapters.has(chapter.number || chapter.chapter_number)
+                    ? "Memuat..."
+                    : chapter.pages
+                    ? `${chapter.pages.length} halaman`
+                    : "Memuat halaman..."}
+                </span>
               </div>
               <div className="flex flex-col gap-4">
-                {chapter.pages.map((pageUrl, index) => (
+                {loadingChapters.has(chapter.number || chapter.chapter_number) ? (
+                  <div className="py-12 text-center text-sm text-zinc-500 dark:text-zinc-400">
+                    Memuat halaman chapter...
+                  </div>
+                ) : chapter.pages && chapter.pages.length > 0 ? (
+                  chapter.pages.map((pageUrl, index) => (
                   <figure
                     key={pageUrl}
                     ref={(node) => {
-                      if (!pageRefs.current[chapter.number]) {
-                        pageRefs.current[chapter.number] = [];
+                      const chapterNum = chapter.number || chapter.chapter_number;
+                      if (!pageRefs.current[chapterNum]) {
+                        pageRefs.current[chapterNum] = [];
                       }
                       if (node) {
-                        pageRefs.current[chapter.number][index] = node;
+                        pageRefs.current[chapterNum][index] = node;
                       }
                     }}
                     className="overflow-hidden rounded-2xl border border-zinc-200 bg-zinc-50 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
-                    data-chapter={chapter.number}
+                    data-chapter={chapter.number || chapter.chapter_number}
                     data-page={index + 1}
                   >
                     <Image
                       src={pageUrl}
-                      alt={`Halaman ${index + 1} Chapter ${chapter.number}`}
+                      alt={`Halaman ${index + 1} Chapter ${chapter.number || chapter.chapter_number}`}
                       width={900}
                       height={1400}
                       className="h-auto w-full bg-zinc-100 object-cover dark:bg-zinc-800"
@@ -172,7 +250,12 @@ export default function ChapterReader({ comic, startChapterNumber = 1, onProgres
                       Halaman {index + 1}
                     </figcaption>
                   </figure>
-                ))}
+                  ))
+                ) : (
+                  <div className="py-12 text-center text-sm text-zinc-500 dark:text-zinc-400">
+                    Tidak ada halaman tersedia
+                  </div>
+                )}
               </div>
             </section>
           ))}

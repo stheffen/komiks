@@ -35,7 +35,7 @@ export default function ComicCard({
               {comic.title}
             </h3>
             <p className="text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-              {comic.origin} • {comic.chapters.length} chapter
+              {comic.origin} • {comic.chapters?.length || comic.totalChapters || comic.latestChapterNumber || 0} chapter
             </p>
           </div>
           {showLibraryAction && (

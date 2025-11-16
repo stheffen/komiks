@@ -1,7 +1,21 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { comics, getComicById, searchComics } from "@/data/comics";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
+import {
+  getComicById,
+  searchComics,
+  getComics,
+  initializeComics,
+} from "@/data/comics";
 
 const STORAGE_KEY = "komik-reader-state";
 
@@ -22,19 +36,57 @@ function reducer(state, action) {
         ...state,
         library: state.library.filter((id) => id !== action.payload),
       };
+    // case "RECORD_HISTORY": {
+    //   const existing = state.history.find(
+    //     (item) => item.comicId === action.payload.comicId
+    //   );
+    //   const nextHistoryEntry = {
+    //     comicId: action.payload.comicId,
+    //     chapterNumber: action.payload.chapterNumber,
+    //     pageNumber: action.payload.pageNumber,
+    //     updatedAt: new Date().toISOString(),
+    //   };
+    //   let history;
+
+    //   if (existing) {
+    //     history = state.history
+    //       .map((item) =>
+    //         item.comicId === action.payload.comicId ? nextHistoryEntry : item
+    //       )
+    //       .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+    //   } else {
+    //     history = [nextHistoryEntry, ...state.history].slice(0, 50);
+    //   }
+
+    //   return { ...state, history };
+    // }
     case "RECORD_HISTORY": {
-      const existing = state.history.find((item) => item.comicId === action.payload.comicId);
+      const payload = action.payload || {};
+      const { comicId, chapterNumber, pageNumber } = payload;
+      if (!comicId) return state;
+
+      const existing = state.history.find((item) => item.comicId === comicId);
+
+      // Jika ada dan chapter/page sama -> tidak perlu update (hindari loop)
+      if (
+        existing &&
+        (existing.chapterNumber === chapterNumber ?? existing.chapterNumber) &&
+        existing.pageNumber === (pageNumber ?? existing.pageNumber)
+      ) {
+        return state; // tidak mengubah state
+      }
+
       const nextHistoryEntry = {
-        comicId: action.payload.comicId,
-        chapterNumber: action.payload.chapterNumber,
-        pageNumber: action.payload.pageNumber,
+        comicId,
+        chapterNumber: chapterNumber ?? existing?.chapterNumber ?? null,
+        pageNumber: pageNumber ?? existing?.pageNumber ?? 1,
         updatedAt: new Date().toISOString(),
       };
-      let history;
 
+      let history;
       if (existing) {
         history = state.history
-          .map((item) => (item.comicId === action.payload.comicId ? nextHistoryEntry : item))
+          .map((item) => (item.comicId === comicId ? nextHistoryEntry : item))
           .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
       } else {
         history = [nextHistoryEntry, ...state.history].slice(0, 50);
@@ -54,7 +106,27 @@ const ComicsContext = createContext(undefined);
 export function ComicsProvider({ children }) {
   const [state, dispatch] = useReducer(reducer, initialState);
   const [isReady, setIsReady] = useState(false);
+  const [comics, setComics] = useState([]);
+  const [comicsLoading, setComicsLoading] = useState(true);
   const hasHydrated = useRef(false);
+
+  const lastRecordedRef = useRef(null);
+
+  // Initialize comics on mount
+  useEffect(() => {
+    async function loadComics() {
+      try {
+        await initializeComics();
+        const loadedComics = await getComics();
+        setComics(loadedComics);
+      } catch (error) {
+        console.error("Error loading comics:", error);
+      } finally {
+        setComicsLoading(false);
+      }
+    }
+    loadComics();
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -102,29 +174,161 @@ export function ComicsProvider({ children }) {
     [state.library]
   );
 
-  const recordHistory = useCallback((comicId, chapterNumber, pageNumber = 1) => {
-    dispatch({
-      type: "RECORD_HISTORY",
-      payload: { comicId, chapterNumber, pageNumber },
-    });
-  }, []);
+  // const recordHistory = useCallback(
+  //   (comicId, chapterNumber, pageNumber = 1) => {
+  //     dispatch({
+  //       type: "RECORD_HISTORY",
+  //       payload: { comicId, chapterNumber, pageNumber },
+  //     });
+  //   },
+  //   []
+  // );
+  const recordHistory = useCallback(
+    (comicId, chapterNumber, pageNumber = 1) => {
+      if (!comicId) return;
 
-  const libraryComics = useMemo(
-    () => state.library.map((comicId) => getComicById(comicId)).filter(Boolean),
-    [state.library]
+      // normalisasi key sederhana
+      const key = `${String(comicId)}@${String(chapterNumber ?? "")}@${String(
+        pageNumber ?? 1
+      )}`;
+
+      // jika sama dengan lastRecorded, skip dispatch (mencegah dispatch duplikat)
+      if (lastRecordedRef.current === key) return;
+
+      // set lastRecordedRef sebelum dispatch agar pemanggilan cepat berikutnya tidak mem-dispatch lagi
+      lastRecordedRef.current = key;
+
+      dispatch({
+        type: "RECORD_HISTORY",
+        payload: { comicId, chapterNumber, pageNumber },
+      });
+    },
+    []
   );
+  useEffect(() => {
+    // sinkronkan lastRecordedRef dengan entry teratas di history saat state berubah dari sumber lain
+    if (Array.isArray(state.history) && state.history.length > 0) {
+      const top = state.history[0];
+      lastRecordedRef.current = `${String(top.comicId)}@${String(
+        top.chapterNumber ?? ""
+      )}@${String(top.pageNumber ?? 1)}`;
+    } else {
+      lastRecordedRef.current = null;
+    }
+  }, [state.history]);
 
-  const historyComics = useMemo(() => {
-    return state.history
-      .map((entry) => {
-        const comic = getComicById(entry.comicId);
-        if (!comic) return null;
-        return {
-          ...entry,
-          comic,
-        };
-      })
-      .filter(Boolean);
+  const [libraryComics, setLibraryComics] = useState([]);
+  const [historyComics, setHistoryComics] = useState([]);
+
+  // Load library comics
+  useEffect(() => {
+    async function loadLibraryComics() {
+      const loaded = await Promise.all(
+        state.library.map(async (comicId) => {
+          const comic = await getComicById(comicId);
+          return comic;
+        })
+      );
+      setLibraryComics(loaded.filter(Boolean));
+    }
+    if (state.library.length > 0) {
+      loadLibraryComics();
+    } else {
+      setLibraryComics([]);
+    }
+  }, [state.library]);
+
+  // Load history comics
+  // useEffect(() => {
+  //   async function loadHistoryComics() {
+  //     const loaded = await Promise.all(
+  //       state.history.map(async (entry) => {
+  //         const comic = await getComicById(entry.comicId);
+  //         if (!comic) return null;
+  //         return {
+  //           ...entry,
+  //           comic,
+  //         };
+  //       })
+  //     );
+  //     setHistoryComics(loaded.filter(Boolean));
+  //   }
+  //   if (state.history.length > 0) {
+  //     loadHistoryComics();
+  //   } else {
+  //     setHistoryComics([]);
+  //   }
+  // }, [state.history]);
+  const lastHistoryKeyRef = useRef(null);
+
+  useEffect(() => {
+    async function loadHistoryComics() {
+      try {
+        if (!Array.isArray(state.history) || state.history.length === 0) {
+          // hanya set jika berbeda untuk menghindari update tak perlu
+          setHistoryComics((prev) => (prev.length === 0 ? prev : []));
+          lastHistoryKeyRef.current = null;
+          return;
+        }
+
+        // buat key sederhana dari history (order-aware)
+        const key = state.history
+          .map(
+            (entry) =>
+              `${entry.comicId ?? ""}@${entry.chapterNumber ?? ""}@${
+                entry.pageNumber ?? ""
+              }`
+          )
+          .join("|");
+
+        // jika key sama dengan terakhir, abaikan (menghindari loop)
+        if (lastHistoryKeyRef.current === key) return;
+
+        // proses load
+        const loaded = await Promise.all(
+          state.history.map(async (entry) => {
+            try {
+              if (!entry || !entry.comicId) return null;
+              const comic = await getComicById(entry.comicId);
+              if (!comic) return null;
+              return {
+                ...entry,
+                comic,
+              };
+            } catch (err) {
+              console.error("[loadHistoryComics] entry failed:", entry, err);
+              return null;
+            }
+          })
+        );
+
+        const filtered = loaded.filter(Boolean);
+
+        // hanya update state jika hasil berbeda dari sebelumnya
+        setHistoryComics((prev) => {
+          try {
+            const prevJson = JSON.stringify(prev);
+            const newJson = JSON.stringify(filtered);
+            if (prevJson === newJson) {
+              // simpan key agar efek tidak berjalan lagi untuk key yang sama
+              lastHistoryKeyRef.current = key;
+              return prev;
+            }
+          } catch (e) {
+            // kalau stringify error, tetap update
+          }
+          lastHistoryKeyRef.current = key;
+          return filtered;
+        });
+      } catch (err) {
+        console.error("[loadHistoryComics] unexpected error:", err);
+        setHistoryComics([]);
+        lastHistoryKeyRef.current = null;
+      }
+    }
+
+    loadHistoryComics();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.history]);
 
   const getLastProgress = useCallback(
@@ -136,9 +340,11 @@ export function ComicsProvider({ children }) {
 
   const value = useMemo(
     () => ({
-      isReady,
+      isReady: isReady && !comicsLoading,
       comics,
+      comicsLoading,
       searchComics,
+      getComicById,
       libraryIds: state.library,
       libraryComics,
       historyEntries: historyComics,
@@ -150,6 +356,8 @@ export function ComicsProvider({ children }) {
     }),
     [
       isReady,
+      comicsLoading,
+      comics,
       state.library,
       libraryComics,
       historyComics,
@@ -161,7 +369,9 @@ export function ComicsProvider({ children }) {
     ]
   );
 
-  return <ComicsContext.Provider value={value}>{children}</ComicsContext.Provider>;
+  return (
+    <ComicsContext.Provider value={value}>{children}</ComicsContext.Provider>
+  );
 }
 
 export function useComics() {
@@ -171,4 +381,3 @@ export function useComics() {
   }
   return context;
 }
-

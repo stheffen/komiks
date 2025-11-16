@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import ComicCard from "@/components/ComicCard";
 import ComicDetailDialog from "@/components/ComicDetailDialog";
@@ -10,13 +10,60 @@ const PAGE_SIZE = 8;
 
 export default function JelajahiPage() {
   const router = useRouter();
-  const { searchComics, toggleLibrary, libraryIds } = useComics();
+  const {
+    searchComics: apiSearchComics,
+    toggleLibrary,
+    libraryIds,
+    comicsLoading,
+  } = useComics();
   const [query, setQuery] = useState("");
   const [chunkCount, setChunkCount] = useState(1);
   const [selectedComic, setSelectedComic] = useState(null);
+  const [filteredComics, setFilteredComics] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
   const scrollContainerRef = useRef(null);
 
-  const filteredComics = useMemo(() => searchComics(query), [query, searchComics]);
+  // Load initial comics
+  useEffect(() => {
+    if (filteredComics.length === 0 && !query && !searchLoading) {
+      setSearchLoading(true);
+      apiSearchComics("")
+        .then((results) => {
+          setFilteredComics(results);
+        })
+        .catch((error) => {
+          console.error("Error loading comics:", error);
+          setFilteredComics([]);
+        })
+        .finally(() => {
+          setSearchLoading(false);
+        });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Debounced search
+  useEffect(() => {
+    const timeoutId = setTimeout(
+      async () => {
+        setSearchLoading(true);
+        try {
+          const results = await apiSearchComics(query);
+          setFilteredComics(results);
+        } catch (error) {
+          console.error("Error searching comics:", error);
+          setFilteredComics([]);
+        } finally {
+          setSearchLoading(false);
+          setChunkCount(1);
+        }
+      },
+      query ? 500 : 0
+    );
+
+    return () => clearTimeout(timeoutId);
+  }, [query, apiSearchComics]);
+
   const visibleComics = filteredComics.slice(0, chunkCount * PAGE_SIZE);
   const hasMore = visibleComics.length < filteredComics.length;
 
@@ -38,7 +85,11 @@ export default function JelajahiPage() {
   };
 
   const handleWheel = (event) => {
-    if (event.deltaY < 0 && scrollContainerRef.current?.scrollTop <= 0 && hasMore) {
+    if (
+      event.deltaY < 0 &&
+      scrollContainerRef.current?.scrollTop <= 0 &&
+      hasMore
+    ) {
       loadMore();
     }
   };
@@ -61,10 +112,12 @@ export default function JelajahiPage() {
   return (
     <div className="space-y-6">
       <header className="space-y-3">
-        <h1 className="text-3xl font-bold text-zinc-900 dark:text-white">Jelajahi</h1>
+        <h1 className="text-3xl font-bold text-zinc-900 dark:text-white">
+          Jelajahi
+        </h1>
         <p className="text-sm text-zinc-600 dark:text-zinc-300">
-          Cari komik berdasarkan judul, genre, atau asal negara. Scroll ke atas di daftar untuk
-          memunculkan 8 komik berikutnya.
+          Cari komik berdasarkan judul, genre, atau asal negara. Scroll ke atas
+          di daftar untuk memunculkan 8 komik berikutnya.
         </p>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <input
@@ -86,9 +139,15 @@ export default function JelajahiPage() {
         onWheel={handleWheel}
         className="max-h-[70vh] overflow-y-auto rounded-3xl border border-zinc-200 bg-white/70 p-6 shadow-inner dark:border-zinc-800 dark:bg-zinc-900/60"
       >
-        {visibleComics.length === 0 ? (
+        {comicsLoading || searchLoading ? (
           <div className="rounded-2xl border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-600 dark:border-zinc-700 dark:text-zinc-300">
-            Tidak ada komik yang sesuai dengan pencarianmu.
+            Memuat komik...
+          </div>
+        ) : visibleComics.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-600 dark:border-zinc-700 dark:text-zinc-300">
+            {query
+              ? "Tidak ada komik yang sesuai dengan pencarianmu."
+              : "Memuat komik..."}
           </div>
         ) : (
           <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
@@ -105,7 +164,7 @@ export default function JelajahiPage() {
             ))}
           </div>
         )}
-        {hasMore && (
+        {hasMore && !searchLoading && (
           <div className="mt-6 text-center text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
             Scroll ke atas atau bawah untuk memuat komik lainnya...
           </div>
@@ -118,9 +177,10 @@ export default function JelajahiPage() {
         onClose={() => setSelectedComic(null)}
         onStartReading={handleStartReading}
         onToggleLibrary={(comicId) => toggleLibrary(comicId)}
-        isInLibrary={selectedComic ? libraryIds.includes(selectedComic.id) : false}
+        isInLibrary={
+          selectedComic ? libraryIds.includes(selectedComic.id) : false
+        }
       />
     </div>
   );
 }
-
