@@ -26,30 +26,44 @@ export default function ComicDetailDialog({
 
   // Load chapters when dialog opens
   useEffect(() => {
+    let isCancelled = false;
+
     if (!isOpen || !comic) {
       setComicWithChapters(null);
-      return;
+      return () => {
+        isCancelled = true;
+      };
     }
 
-    // If comic already has chapters, use them
-    if (comic.chapters && comic.chapters.length > 0) {
-      setComicWithChapters(comic);
-      return;
-    }
-
-    // Otherwise fetch chapters
-    setChaptersLoading(true);
-    getComicWithChapters(comic.id)
-      .then((comicData) => {
-        setComicWithChapters(comicData || comic);
-      })
-      .catch((error) => {
-        console.error("Error loading chapters:", error);
+    async function loadChapters() {
+      if (comic.chapters && comic.chapters.length > 0) {
         setComicWithChapters(comic);
-      })
-      .finally(() => {
-        setChaptersLoading(false);
-      });
+        return;
+      }
+
+      setChaptersLoading(true);
+      try {
+        const comicData = await getComicWithChapters(comic.id);
+        if (!isCancelled) {
+          setComicWithChapters(comicData || { ...comic, chapters: [] });
+        }
+      } catch (error) {
+        console.error("Error loading chapters:", error);
+        if (!isCancelled) {
+          setComicWithChapters({ ...comic, chapters: [] });
+        }
+      } finally {
+        if (!isCancelled) {
+          setChaptersLoading(false);
+        }
+      }
+    }
+
+    loadChapters();
+
+    return () => {
+      isCancelled = true;
+    };
   }, [isOpen, comic]);
 
   if (!isOpen || !comic) return null;
@@ -72,9 +86,10 @@ export default function ComicDetailDialog({
             <Image
               src={comic.cover}
               alt={comic.title}
-              fill
+              width={440}
+              height={660}
               sizes="(max-width: 768px) 50vw, 220px"
-              className="object-cover"
+              className="h-full w-full object-cover"
               priority
             />
           </div>
@@ -127,8 +142,15 @@ export default function ComicDetailDialog({
                     Tidak ada chapter tersedia
                   </li>
                 ) : (
-                  chapters.map((chapter) => (
-                    <li key={chapter.chapter_id}>
+                  chapters.map((chapter) => {
+                    const chapterKey =
+                      chapter.id ||
+                      chapter.chapter_id ||
+                      `${chapter.number || chapter.chapter_number}-${
+                        chapter.title || "chapter"
+                      }`;
+                    return (
+                      <li key={chapterKey}>
                       <button
                         type="button"
                         onClick={() =>
@@ -154,10 +176,20 @@ export default function ComicDetailDialog({
                             : "Tersedia"}
                         </span>
                       </button>
-                    </li>
-                  ))
+                      </li>
+                    );
+                  })
                 )}
               </ul>
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="rounded-full border border-zinc-300 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-zinc-600 transition hover:border-zinc-400 hover:text-zinc-900 dark:border-zinc-700 dark:text-zinc-300 dark:hover:border-zinc-500"
+                >
+                  Tutup
+                </button>
+              </div>
             </section>
           </div>
         </div>

@@ -16,7 +16,15 @@ export default function RiwayatPage() {
   }, [historyEntries]);
 
   const handleContinue = (entry) => {
-    router.push(`/baca/${entry.comic.id}/${entry.chapterNumber}`);
+    const params = new URLSearchParams();
+    if (entry.chapterNumber) {
+      params.set("chapter", entry.chapterNumber);
+    }
+    if (entry.pageNumber && entry.pageNumber > 0) {
+      params.set("page", entry.pageNumber);
+    }
+    const query = params.toString();
+    router.push(`/baca/${entry.comic.id}${query ? `?${query}` : ""}`);
   };
 
   return (

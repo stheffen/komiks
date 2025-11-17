@@ -5,13 +5,17 @@ import { useEffect } from "react";
 import ChapterReader from "@/components/ChapterReader";
 import { useComics } from "@/context/ComicsContext";
 
-export default function ReaderClient({ comic, startChapterNumber }) {
+export default function ReaderClient({
+  comic,
+  startChapterNumber,
+  startPage = 1,
+}) {
   const { recordHistory, toggleLibrary, libraryIds } = useComics();
   const isInLibrary = libraryIds.includes(comic.id);
 
   useEffect(() => {
-    recordHistory(comic.id, startChapterNumber, 1);
-  }, [comic.id, startChapterNumber, recordHistory]);
+    recordHistory(comic.id, startChapterNumber, startPage ?? 1);
+  }, [comic.id, startChapterNumber, startPage, recordHistory]);
 
   const handleProgress = (comicId, chapterNumber, pageNumber) => {
     recordHistory(comicId, chapterNumber, pageNumber);
@@ -25,7 +29,7 @@ export default function ReaderClient({ comic, startChapterNumber }) {
             {comic.title}
           </h1>
           <p className="text-sm text-zinc-500 dark:text-zinc-400">
-            Chapter awal: {startChapterNumber}
+            Chapter awal: {startChapterNumber} • Halaman {startPage ?? 1}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -50,9 +54,10 @@ export default function ReaderClient({ comic, startChapterNumber }) {
       </header>
 
       <ChapterReader
-        key={`${comic.id}-${startChapterNumber}`}
+        key={`${comic.id}-${startChapterNumber}-${startPage ?? 1}`}
         comic={comic}
         startChapterNumber={startChapterNumber}
+        startPage={startPage ?? 1}
         onProgress={handleProgress}
       />
     </div>

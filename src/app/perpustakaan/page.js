@@ -21,15 +21,34 @@ export default function PerpustakaanPage() {
     return [...libraryComics].sort((a, b) => a.title.localeCompare(b.title));
   }, [libraryComics]);
 
+  const buildReaderUrl = (comicId, { chapterNumber, chapterId, pageNumber }) => {
+    const params = new URLSearchParams();
+    if (chapterId) {
+      params.set("chapterId", chapterId);
+    } else if (chapterNumber) {
+      params.set("chapter", chapterNumber);
+    }
+    if (pageNumber && pageNumber > 0) {
+      params.set("page", pageNumber);
+    }
+    const queryString = params.toString();
+    return `/baca/${comicId}${queryString ? `?${queryString}` : ""}`;
+  };
+
   const handleOpenReader = (comic) => {
     const progress = getLastProgress(comic.id);
     const chapterNumber = progress?.chapterNumber ?? 1;
-    router.push(`/baca/${comic.id}/${chapterNumber}`);
+    const pageNumber = progress?.pageNumber ?? 1;
+    router.push(
+      buildReaderUrl(comic.id, { chapterNumber, pageNumber })
+    );
   };
 
-  const handleStartFromDialog = (chapterNumber) => {
+  const handleStartFromDialog = (chapterId) => {
     if (!selectedComic) return;
-    router.push(`/baca/${selectedComic.id}/${chapterNumber}`);
+    router.push(
+      buildReaderUrl(selectedComic.id, { chapterId, pageNumber: 1 })
+    );
     setSelectedComic(null);
   };
 
@@ -60,7 +79,7 @@ export default function PerpustakaanPage() {
           {orderedLibrary.map((comic) => {
             const progress = getLastProgress(comic.id);
             const progressText = progress
-              ? `Terakhir: Chapter ${progress.chapterNumber}`
+              ? `Terakhir: Chapter ${progress.chapterNumber} • Hal ${progress.pageNumber ?? 1}`
               : "Belum dibaca";
             const primaryActionLabel = progress ? "Lanjutkan" : "Mulai Baca";
             return (

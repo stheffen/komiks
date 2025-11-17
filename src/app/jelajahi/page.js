@@ -94,9 +94,12 @@ export default function JelajahiPage() {
     }
   };
 
-  const handleStartReading = (chapterNumber) => {
+  const handleStartReading = (chapterId) => {
     if (!selectedComic) return;
-    router.push(`/baca/${selectedComic.id}/${chapterNumber}`);
+    const query = chapterId
+      ? `?chapterId=${encodeURIComponent(chapterId)}&page=1`
+      : "";
+    router.push(`/baca/${selectedComic.id}${query}`);
     setSelectedComic(null);
   };
 
