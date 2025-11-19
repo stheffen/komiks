@@ -25,6 +25,7 @@ export default function ComicCard({
           fill
           sizes="(max-width: 768px) 50vw, 25vw"
           className="object-cover transition duration-500 group-hover:scale-105"
+          unoptimized
         />
         <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent opacity-60 transition group-hover:opacity-70" />
       </div>

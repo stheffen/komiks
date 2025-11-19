@@ -63,16 +63,16 @@ export default function ChapterReader({
     return document.scrollingElement || document.documentElement || window;
   }, []);
 
-  const getScrollTop = (root) => {
+  const getScrollTop = useCallback((root) => {
     if (!root) return 0;
     if (root === window) return window.scrollY || document.documentElement.scrollTop || 0;
     if (root === document.scrollingElement || root === document.documentElement) {
       return document.documentElement.scrollTop || document.body.scrollTop || 0;
     }
     return root.scrollTop;
-  };
+  }, []);
 
-  const setScrollTop = (root, value) => {
+  const setScrollTop = useCallback((root, value) => {
     if (!root) return;
     if (root === window) {
       window.scrollTo({ top: value });
@@ -84,9 +84,9 @@ export default function ChapterReader({
       return;
     }
     root.scrollTop = value;
-  };
+  }, []);
 
-  const getMaxScroll = (root) => {
+  const getMaxScroll = useCallback((root) => {
     if (!root) return 0;
     if (root === window) {
       const dh = document.documentElement.scrollHeight || document.body.scrollHeight || 0;
@@ -99,7 +99,7 @@ export default function ChapterReader({
       return Math.max(0, dh - wh);
     }
     return Math.max(0, root.scrollHeight - root.clientHeight);
-  };
+  }, []);
 
   // Find chapter by number
   const findChapter = useCallback(
@@ -163,7 +163,7 @@ export default function ChapterReader({
     if (!containerRef.current) return;
     if ((initialPageNumber ?? 1) <= 1) {
       try {
-        containerRef.current.scrollTo({ top: 0, behavior: "instant" });
+        containerRef.current.scrollTo({ top: 0, behavior: "auto" });
       } catch (e) {
         containerRef.current.scrollTop = 0;
       }
@@ -228,11 +228,17 @@ export default function ChapterReader({
     }
   }, []);
 
-  // handleScroll: use container if scrolling, otherwise update active via window
+  // handleScroll: use canonical root for scroll calculations
   const handleScroll = useCallback(
     (event) => {
-      // figure out which element produced the event
-      const element = event.currentTarget || event.target || document.scrollingElement || document.documentElement;
+      // Use canonical root instead of event target
+      const root = getRootForScroll();
+      const scrollTop = getScrollTop(root);
+      const max = getMaxScroll(root);
+      const clientHeight =
+        root === window
+          ? (window.innerHeight || document.documentElement.clientHeight || 0)
+          : (root?.clientHeight ?? 0);
 
       // If auto-scroll running via ref, this scroll might be from auto-scroll; otherwise treat as user scroll
       if (!isAutoScrollingRef.current) {
@@ -249,16 +255,15 @@ export default function ChapterReader({
         }
       }
 
-      const scrollHeight = element.scrollHeight ?? document.documentElement.scrollHeight;
-      const scrollTop = element.scrollTop ?? window.scrollY ?? document.documentElement.scrollTop;
-      const clientHeight = element.clientHeight ?? window.innerHeight ?? document.documentElement.clientHeight;
-
-      if (scrollHeight - scrollTop - clientHeight <= BOTTOM_BUFFER) {
+      // If we're near the bottom, load next chapter
+      if (max - scrollTop <= BOTTOM_BUFFER) {
         loadNextChapter();
       }
+
+      // update which page/chapter is active
       updateActiveFromScroll();
     },
-    [loadNextChapter, updateActiveFromScroll]
+    [getRootForScroll, getScrollTop, getMaxScroll, loadNextChapter, updateActiveFromScroll]
   );
 
   // add wheel/touch listeners to both container and window (to detect user interrupt)
@@ -295,6 +300,20 @@ export default function ChapterReader({
       window.removeEventListener("touchstart", handleTouchStart);
     };
   }, []);
+
+  // Ensure we listen for window scroll as well (when container isn't scrollable)
+  useEffect(() => {
+    const onWindowScroll = (e) => {
+      // delegate to the same handler so logic stays centralized
+      handleScroll(e);
+    };
+
+    window.addEventListener("scroll", onWindowScroll, { passive: true });
+
+    return () => {
+      window.removeEventListener("scroll", onWindowScroll);
+    };
+  }, [handleScroll]);
 
   // Auto-scroll effect: supports both container and window/document
   useEffect(() => {
@@ -367,7 +386,7 @@ export default function ChapterReader({
         autoScrollFrameRef.current = null;
       }
     };
-  }, [isAutoScrolling, scrollSpeed, getRootForScroll, loadNextChapter]);
+  }, [isAutoScrolling, scrollSpeed, getRootForScroll, loadNextChapter, getMaxScroll, getScrollTop, setScrollTop]);
 
   // cleanup on unmount
   useEffect(() => {
@@ -420,20 +439,35 @@ export default function ChapterReader({
     const chapterNodes = pageRefs.current[initialChapterNumber];
     const targetNode = chapterNodes?.[Math.max(0, initialPageNumber - 1)] ?? null;
     if (!targetNode) return;
-    pendingInitialScroll.current = false;
+    // still pending; perform scroll then mark finished
     requestAnimationFrame(() => {
       try {
-        targetNode.scrollIntoView({ behavior: "instant", block: "start" });
+        targetNode.scrollIntoView({ behavior: "auto", block: "start" });
       } catch {
         targetNode.scrollIntoView(true);
       }
+      pendingInitialScroll.current = false;
+      // after scrolling, force an active calc to make sure activePage matches visual
+      requestAnimationFrame(() => {
+        updateActiveFromScroll();
+      });
     });
-  }, [initialChapterNumber, initialPageNumber, chaptersWithPages, visibleChapters]);
+  }, [initialChapterNumber, initialPageNumber, chaptersWithPages, visibleChapters, updateActiveFromScroll]);
 
   useEffect(() => {
     if (!comic?.id || !onProgress) return;
+
+    // If initial scroll hasn't been completed yet, postpone emitting progress
+    if (pendingInitialScroll.current) {
+      const pagesForActive = chaptersWithPages[activeChapter];
+      if (!pagesForActive || !pagesForActive.pages) {
+        // not ready yet — skip emitting
+        return;
+      }
+    }
+
     onProgress(comic.id, activeChapter, activePage);
-  }, [activeChapter, activePage, comic?.id, onProgress]);
+  }, [activeChapter, activePage, comic?.id, onProgress, chaptersWithPages]);
 
   const sortedVisibleChapters = useMemo(
     () =>
@@ -451,6 +485,14 @@ export default function ChapterReader({
         }),
     [visibleChapters, findChapter, chaptersWithPages]
   );
+
+  // Ensure we recalc active page after new pages are rendered
+  useEffect(() => {
+    // run on next frame so DOM nodes exist
+    requestAnimationFrame(() => {
+      updateActiveFromScroll();
+    });
+  }, [chaptersWithPages, visibleChapters, updateActiveFromScroll]);
 
   return (
     <div className="flex flex-1 flex-col gap-4">
@@ -621,4 +663,3 @@ export default function ChapterReader({
     </div>
   );
 }
- 

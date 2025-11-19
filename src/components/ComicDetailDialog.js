@@ -91,6 +91,7 @@ export default function ComicDetailDialog({
               sizes="(max-width: 768px) 50vw, 220px"
               className="h-full w-full object-cover"
               priority
+              unoptimized
             />
           </div>
           <div className="flex flex-1 flex-col gap-4 px-6 pb-6 pt-8 md:pt-6">
