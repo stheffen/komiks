@@ -45,6 +45,9 @@ export default function ChapterReader({
   const isAutoScrollingRef = useRef(false);
   const autoScrollFrameRef = useRef(null);
   const lastTimeRef = useRef(0);
+  const controlsWrapperRef = useRef(null);
+  const clickCounterRef = useRef(0);
+
 
   const chapterNumbers = useMemo(
     () =>
@@ -422,17 +425,43 @@ export default function ChapterReader({
   // Global click/touch handler to toggle visibility of floating controls
   useEffect(() => {
     const handler = (e) => {
-      // Toggle controlsVisible on every document click/touch
+      const target = e.target;
+  
+      // Jika klik berasal dari tombol atau UI control → abaikan
+      if (controlsWrapperRef.current && controlsWrapperRef.current.contains(target)) return;
+  
+      // Jika klik berasal dari area reader → abaikan (sesuai logicmu sekarang)
+      if (containerRef.current && containerRef.current.contains(target)) return;
+  
+      // == Double-click logic ==
+      clickCounterRef.current += 1;
+  
+      // Reset setelah 300ms jika tidak jadi double-click
+      setTimeout(() => {
+        clickCounterRef.current = 0;
+      }, 300);
+  
+      // Jika belum 2x klik → jangan lakukan apa pun
+      if (clickCounterRef.current < 2) return;
+  
+      // Jika sudah 2x klik → toggle
       setControlsVisible((prev) => !prev);
+  
+      // Reset counter
+      clickCounterRef.current = 0;
     };
+  
     document.addEventListener("click", handler);
     document.addEventListener("touchstart", handler, { passive: true });
-
+    document.addEventListener("pointerdown", handler);
+  
     return () => {
       document.removeEventListener("click", handler);
       document.removeEventListener("touchstart", handler);
+      document.removeEventListener("pointerdown", handler);
     };
   }, []);
+  
 
   useEffect(() => {
     if (!pendingInitialScroll.current) return;
@@ -594,6 +623,7 @@ export default function ChapterReader({
         
         {controlsVisible && (
           <div
+            ref={controlsWrapperRef}    
             onClick={(e) => e.stopPropagation()}
             onTouchStart={(e) => e.stopPropagation()}
             className="flex flex-col items-end gap-3"
