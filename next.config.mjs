@@ -5,6 +5,7 @@ const nextConfig = {
       {
         protocol: "https",
         hostname: "storage.shngm.id",
+        pathname: "/**",
       },
       {
         protocol: "https",
