@@ -1,4 +1,4 @@
-const API_BASE_URL = "https://api.shngm.io/v1";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL;
 
 /**
  * Search comics by query
@@ -97,23 +97,6 @@ export async function getComicChapters(mangaId, page = 1, pageSize = 1000) {
  * @param {string} chapterId - Chapter ID
  * @returns {Promise<Object>} API response
  */
-// export async function getChapterDetail(chapterId) {
-//   const url = `${API_BASE_URL}/chapter/detail/${chapterId}`;
-
-//   try {
-//     const response = await fetch(url);
-//     if (!response.ok) {
-//       throw new Error(`HTTP error! status: ${response.status}`);
-//     }
-//     const data = await response.json();
-//     console.log(data);
-//     return data;
-//   } catch (error) {
-//     console.error("Error fetching chapter detail:", error);
-//     throw error;
-//   }
-// }
-
 // services/api.js
 export async function getChapterDetail(chapterId) {
   const url = `${API_BASE_URL}/chapter/detail/${chapterId}`;
