@@ -571,6 +571,7 @@ export default function ChapterReader({
                           className="h-auto w-full bg-zinc-100 object-cover dark:bg-zinc-800"
                           loading="lazy"
                           sizes="(max-width: 768px) 90vw, 60vw"
+                          unoptimized
                         />
                         <figcaption className="px-4 py-2 text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
                           Halaman {index + 1}
