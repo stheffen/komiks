@@ -82,18 +82,6 @@ export default function ComicDetailDialog({
           Tutup
         </button>
         <div className="grid flex-1 grid-cols-1 gap-6 overflow-y-auto md:grid-cols-[220px,1fr]">
-          <div className="relative h-full min-h-[320px] overflow-hidden bg-zinc-100 md:min-h-full dark:bg-zinc-800/60">
-            <Image
-              src={comic.cover}
-              alt={comic.title}
-              width={440}
-              height={660}
-              sizes="(max-width: 768px) 50vw, 220px"
-              className="h-full w-full object-cover"
-              priority
-              unoptimized
-            />
-          </div>
           <div className="flex flex-1 flex-col gap-4 px-6 pb-6 pt-8 md:pt-6">
             <header className="space-y-2">
               <p className="text-sm uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
