@@ -60,6 +60,7 @@ export default function RiwayatPage() {
                     width={96}
                     height={144}
                     className="h-24 w-16 rounded-2xl object-cover"
+                    unoptimized
                   />
                   <div>
                     <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">
