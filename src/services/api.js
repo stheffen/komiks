@@ -1,4 +1,29 @@
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL;
+/**
+ * Fetch latest updated comics (Terupdate)
+ * @param {number} page - Page number (default: 1)
+ * @param {number} pageSize - Items per page (default: 24)
+ * @returns {Promise<Array>} Array of mapped comics
+ */
+export async function getLatestUpdatedComics(page = 1, pageSize = 3) {
+  const url = `https://api.shngm.io/v1/manga/list?type=project&page=${page}&page_size=${pageSize}&is_update=true&sort=latest&sort_order=desc`;
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    const data = await response.json();
+    if (Array.isArray(data.data)) {
+      return data.data.map(mapApiMangaToComic);
+    }
+    return [];
+  } catch (error) {
+    console.error("Error fetching latest updated comics:", error);
+    return [];
+  }
+}
+// Normalize API base URL from env: trim whitespace and remove trailing slashes
+const rawApiBase = process.env.NEXT_PUBLIC_API_BASE_URL || "";
+const API_BASE_URL = rawApiBase.trim().replace(/\/+$|\s+/g, "");
 
 /**
  * Search comics by query
@@ -11,6 +36,8 @@ export async function searchComics(query, page = 1, pageSize = 24) {
   const url = `${API_BASE_URL}/manga/list?page=${page}&page_size=${pageSize}&genre_include_mode=or&genre_exclude_mode=or&sort=latest&sort_order=desc&q=${encodeURIComponent(
     query
   )}`;
+
+  console.debug("[api.searchComics] url:", url);
 
   try {
     const response = await fetch(url);
@@ -34,6 +61,8 @@ export async function searchComics(query, page = 1, pageSize = 24) {
 export async function getComicsList(page = 1, pageSize = 50) {
   const url = `${API_BASE_URL}/manga/list?page=${page}&page_size=${pageSize}`;
 
+  console.debug("[api.getComicsList] url:", url);
+
   try {
     const response = await fetch(url);
     if (!response.ok) {
@@ -56,6 +85,8 @@ export async function getComicsList(page = 1, pageSize = 50) {
 export async function getTopComics(page = 1, pageSize = 10) {
   const url = `${API_BASE_URL}/manga/top?page=${page}&page_size=${pageSize}`;
 
+  console.debug("[api.getTopComics] url:", url);
+
   try {
     const response = await fetch(url);
     if (!response.ok) {
@@ -70,6 +101,49 @@ export async function getTopComics(page = 1, pageSize = 10) {
 }
 
 /**
+ * Try to fetch single manga detail by id using several candidate paths.
+ * This is useful when the server-side needs a single comic and the list endpoints
+ * don't include the item.
+ */
+export async function getMangaDetail(mangaId) {
+  const candidates = [
+    `${API_BASE_URL}/manga/detail/${mangaId}`,
+    `${API_BASE_URL}/manga/${mangaId}/detail`,
+    `${API_BASE_URL}/manga/${mangaId}`,
+    `${API_BASE_URL}/manga/detail?manga_id=${encodeURIComponent(mangaId)}`,
+  ];
+
+  let lastError = null;
+  for (const url of candidates) {
+    try {
+      console.debug("[api.getMangaDetail] trying url:", url);
+      const response = await fetch(url);
+      if (!response.ok) {
+        console.debug(
+          "[api.getMangaDetail] non-ok response:",
+          response.status,
+          url
+        );
+        if (response.status === 404) {
+          lastError = new Error(`HTTP 404 at ${url}`);
+          continue;
+        }
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      const body = await response.json();
+      // prefer body.data if present
+      return body.data ?? body;
+    } catch (err) {
+      console.error("[api.getMangaDetail] failed for candidate:", url, err);
+      lastError = err;
+    }
+  }
+  throw (
+    lastError || new Error("Failed to fetch manga detail: no candidates tried")
+  );
+}
+
+/**
  * Get comic chapters list
  * @param {string} mangaId - Manga ID
  * @param {number} page - Page number (default: 1)
@@ -78,6 +152,8 @@ export async function getTopComics(page = 1, pageSize = 10) {
  */
 export async function getComicChapters(mangaId, page = 1, pageSize = 1000) {
   const url = `${API_BASE_URL}/chapter/${mangaId}/list?page=${page}&page_size=${pageSize}&sort_by=chapter_number&sort_order=desc`;
+
+  console.debug("[api.getComicChapters] url:", url);
 
   try {
     const response = await fetch(url);
@@ -99,20 +175,65 @@ export async function getComicChapters(mangaId, page = 1, pageSize = 1000) {
  */
 // services/api.js
 export async function getChapterDetail(chapterId) {
-  const url = `${API_BASE_URL}/chapter/detail/${chapterId}`;
+  // Try multiple URL patterns to be resilient against API path differences
+  const candidates = [
+    `${API_BASE_URL}/chapter/detail/${chapterId}`,
+    `${API_BASE_URL}/chapter/${chapterId}/detail`,
+    `${API_BASE_URL}/chapter/${chapterId}`,
+    `${API_BASE_URL}/chapter/detail?chapter_id=${encodeURIComponent(
+      chapterId
+    )}`,
+  ];
 
-  try {
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+  let lastError = null;
+  for (const url of candidates) {
+    try {
+      console.debug("[api.getChapterDetail] trying url:", url);
+      const response = await fetch(url);
+      const text = await response.text();
+
+      // Try to parse JSON if possible
+      let body = null;
+      try {
+        body = text ? JSON.parse(text) : null;
+      } catch (e) {
+        body = text;
+      }
+
+      if (!response.ok) {
+        console.debug(
+          "[api.getChapterDetail] non-ok response:",
+          response.status,
+          url,
+          body
+        );
+        // If 404, try next candidate; otherwise throw
+        if (response.status === 404) {
+          lastError = new Error(`HTTP 404 at ${url}`);
+          continue;
+        }
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      // If body is an object and has .data, return it; otherwise return body
+      if (body && typeof body === "object") {
+        return body.data ?? body;
+      }
+
+      // if not JSON, return raw text
+      return body;
+    } catch (error) {
+      console.error("[api.getChapterDetail] failed for candidate:", url, error);
+      lastError = error;
+      // try next candidate
     }
-    const body = await response.json();
-    // Kembalikan body.data agar pemanggil mendapat langsung object yang berisi chapter, base_url, dll
-    return body.data ?? null;
-  } catch (error) {
-    console.error("Error fetching chapter detail:", error);
-    throw error;
   }
+
+  // If all candidates failed, throw the last error
+  throw (
+    lastError ||
+    new Error("Failed to fetch chapter detail: no candidates tried")
+  );
 }
 
 /**
@@ -136,7 +257,7 @@ export function mapApiMangaToComic(apiManga) {
   };
 
   return {
-    id: apiManga.manga_id,
+    id: String(apiManga.manga_id ?? ""),
     title: apiManga.title,
     cover: apiManga.cover_image_url || apiManga.cover_portrait_url || "",
     origin: countryMap[apiManga.country_id] || apiManga.country_id,

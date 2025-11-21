@@ -11,7 +11,8 @@ export default function RiwayatPage() {
 
   const orderedHistory = useMemo(() => {
     return [...historyEntries].sort(
-      (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+      (a, b) =>
+        new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
     );
   }, [historyEntries]);
 
@@ -30,9 +31,12 @@ export default function RiwayatPage() {
   return (
     <div className="space-y-6">
       <header className="space-y-2">
-        <h1 className="text-3xl font-bold text-zinc-900 dark:text-white">Riwayat</h1>
+        <h1 className="text-3xl font-bold text-zinc-900 dark:text-white">
+          Riwayat
+        </h1>
         <p className="text-sm text-zinc-600 dark:text-zinc-300">
-          Lihat komik yang terakhir kamu baca dan lanjutkan dari chapter serta halaman terakhir.
+          Lihat komik yang terakhir kamu baca dan lanjutkan dari chapter serta
+          halaman terakhir.
         </p>
       </header>
 
@@ -42,7 +46,8 @@ export default function RiwayatPage() {
             Belum ada riwayat bacaan
           </h2>
           <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
-            Baca komik dari perpustakaan atau jelajahi untuk mulai mengisi riwayat.
+            Baca komik dari perpustakaan atau jelajahi untuk mulai mengisi
+            riwayat.
           </p>
         </div>
       ) : (
@@ -67,7 +72,8 @@ export default function RiwayatPage() {
                       {entry.comic.title}
                     </h2>
                     <p className="text-sm text-zinc-500 dark:text-zinc-400">
-                      Terakhir dibaca: Chapter {entry.chapterNumber} • Halaman {entry.pageNumber}
+                      Terakhir dibaca: Chapter {entry.chapterNumber} • Halaman{" "}
+                      {entry.pageNumber}
                     </p>
                     <p className="mt-1 text-xs uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
                       {new Date(entry.updatedAt).toLocaleString("id-ID")}
@@ -89,4 +95,3 @@ export default function RiwayatPage() {
     </div>
   );
 }
-

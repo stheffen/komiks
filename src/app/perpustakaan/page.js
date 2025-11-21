@@ -8,20 +8,18 @@ import { useComics } from "@/context/ComicsContext";
 
 export default function PerpustakaanPage() {
   const router = useRouter();
-  const {
-    isReady,
-    libraryComics,
-    libraryIds,
-    toggleLibrary,
-    getLastProgress,
-  } = useComics();
+  const { isReady, libraryComics, libraryIds, toggleLibrary, getLastProgress } =
+    useComics();
   const [selectedComic, setSelectedComic] = useState(null);
 
   const orderedLibrary = useMemo(() => {
     return [...libraryComics].sort((a, b) => a.title.localeCompare(b.title));
   }, [libraryComics]);
 
-  const buildReaderUrl = (comicId, { chapterNumber, chapterId, pageNumber }) => {
+  const buildReaderUrl = (
+    comicId,
+    { chapterNumber, chapterId, pageNumber }
+  ) => {
     const params = new URLSearchParams();
     if (chapterId) {
       params.set("chapterId", chapterId);
@@ -39,23 +37,21 @@ export default function PerpustakaanPage() {
     const progress = getLastProgress(comic.id);
     const chapterNumber = progress?.chapterNumber ?? 1;
     const pageNumber = progress?.pageNumber ?? 1;
-    router.push(
-      buildReaderUrl(comic.id, { chapterNumber, pageNumber })
-    );
+    router.push(buildReaderUrl(comic.id, { chapterNumber, pageNumber }));
   };
 
   const handleStartFromDialog = (chapterId) => {
     if (!selectedComic) return;
-    router.push(
-      buildReaderUrl(selectedComic.id, { chapterId, pageNumber: 1 })
-    );
+    router.push(buildReaderUrl(selectedComic.id, { chapterId, pageNumber: 1 }));
     setSelectedComic(null);
   };
 
   return (
     <div className="space-y-6">
       <header className="space-y-2">
-        <h1 className="text-3xl font-bold text-zinc-900 dark:text-white">Perpustakaan</h1>
+        <h1 className="text-3xl font-bold text-zinc-900 dark:text-white">
+          Perpustakaan
+        </h1>
         <p className="text-sm text-zinc-600 dark:text-zinc-300">
           Simpan komik favoritmu dan lanjutkan membaca dari chapter terakhir.
         </p>
@@ -71,7 +67,8 @@ export default function PerpustakaanPage() {
             Perpustakaanmu masih kosong
           </h2>
           <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
-            Jelajahi komik di halaman <strong>Jelajahi</strong> dan tambahkan yang kamu suka.
+            Jelajahi komik di halaman <strong>Jelajahi</strong> dan tambahkan
+            yang kamu suka.
           </p>
         </div>
       ) : (
@@ -79,7 +76,9 @@ export default function PerpustakaanPage() {
           {orderedLibrary.map((comic) => {
             const progress = getLastProgress(comic.id);
             const progressText = progress
-              ? `Terakhir: Chapter ${progress.chapterNumber} • Hal ${progress.pageNumber ?? 1}`
+              ? `Terakhir: Chapter ${progress.chapterNumber} • Hal ${
+                  progress.pageNumber ?? 1
+                }`
               : "Belum dibaca";
             const primaryActionLabel = progress ? "Lanjutkan" : "Mulai Baca";
             return (
@@ -104,9 +103,10 @@ export default function PerpustakaanPage() {
         onClose={() => setSelectedComic(null)}
         onStartReading={handleStartFromDialog}
         onToggleLibrary={(comicId) => toggleLibrary(comicId)}
-        isInLibrary={selectedComic ? libraryIds.includes(selectedComic.id) : false}
+        isInLibrary={
+          selectedComic ? libraryIds.includes(selectedComic.id) : false
+        }
       />
     </div>
   );
 }
-

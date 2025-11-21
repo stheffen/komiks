@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import ChapterReader from "@/components/ChapterReader";
 import { useComics } from "@/context/ComicsContext";
 
@@ -10,8 +10,13 @@ export default function ReaderClient({
   startChapterNumber,
   startPage = 1,
 }) {
-  const { recordHistory, toggleLibrary, libraryIds } = useComics();
+  const { recordHistory, toggleLibrary, libraryIds, forceRecordHistory } =
+    useComics();
   const isInLibrary = libraryIds.includes(comic.id);
+  const lastProgressRef = useRef({
+    chapter: startChapterNumber,
+    page: startPage ?? 1,
+  });
 
   useEffect(() => {
     recordHistory(comic.id, startChapterNumber, startPage ?? 1);
@@ -19,7 +24,118 @@ export default function ReaderClient({
 
   const handleProgress = (comicId, chapterNumber, pageNumber) => {
     recordHistory(comicId, chapterNumber, pageNumber);
+    // keep last progress in ref for unload handler
+    // try to resolve chapterId from comic.chapters if available
+    const chapterObj = (comic.chapters || []).find(
+      (c) => Number(c.number ?? c.chapter_number) === Number(chapterNumber)
+    );
+    const chapterId = chapterObj
+      ? chapterObj.id || chapterObj.chapter_id
+      : null;
+    lastProgressRef.current = {
+      chapter: chapterNumber,
+      chapterId,
+      page: pageNumber,
+    };
   };
+
+  // Save last progress on unload and mark for redirect to Jelajahi on next load
+  useEffect(() => {
+    const saveAndFlag = () => {
+      try {
+        const p = lastProgressRef.current || {
+          chapter: startChapterNumber,
+          chapterId: null,
+          page: startPage ?? 1,
+        };
+        recordHistory(comic.id, p.chapter, p.page);
+        // store detailed last progress for resume
+        if (typeof window !== "undefined") {
+          const now = new Date().toISOString();
+          try {
+            const payload = {
+              comicId: comic.id,
+              chapterNumber: p.chapter,
+              chapterId: p.chapterId || null,
+              // write both keys so consumers using either name can read it
+              page: p.page,
+              pageNumber: p.page,
+              updatedAt: now,
+            };
+            // force in-memory update so the context doesn't later overwrite
+            // the merged value with a stale state (race condition).
+            try {
+              forceRecordHistory(comic.id, p.chapter, p.page);
+            } catch (e) {
+              // fallback to normal recordHistory
+              recordHistory(comic.id, p.chapter, p.page);
+            }
+            window.localStorage.setItem(
+              "komik:lastProgress",
+              JSON.stringify(payload)
+            );
+          } catch (e) {
+            // ignore serialization errors
+          }
+          // set flag so next app load can show resume banner (and fallback redirect)
+          window.localStorage.setItem("komik:shouldRedirectToJelajahi", "1");
+
+          // ALSO merge this progress into the main app storage so Riwayat shows latest
+          try {
+            const STORAGE_KEY = "komik-reader-state";
+            const raw = window.localStorage.getItem(STORAGE_KEY);
+            let base = {};
+            if (raw) {
+              try {
+                base = JSON.parse(raw) || {};
+              } catch (e) {
+                base = {};
+              }
+            }
+            const nextEntry = {
+              comicId: String(comic.id),
+              chapterNumber: p.chapter,
+              pageNumber: p.page,
+              updatedAt: now,
+            };
+            console.debug(
+              "[reader-client] Unload: updating komik-reader-state.history[0]:",
+              nextEntry
+            );
+            const prevHistory = Array.isArray(base.history) ? base.history : [];
+            const filtered = prevHistory.filter(
+              (h) => String(h.comicId) !== String(nextEntry.comicId)
+            );
+            const merged = [nextEntry, ...filtered].slice(0, 50);
+            base.history = merged;
+            window.localStorage.setItem(STORAGE_KEY, JSON.stringify(base));
+            // notify app that local state was updated so context can re-hydrate
+            try {
+              // include merged payload in event.detail to avoid races
+              const detail = { merged: base };
+              window.dispatchEvent(
+                new CustomEvent("komik:localstate-updated", { detail })
+              );
+            } catch (e) {
+              // ignore
+            }
+          } catch (e) {
+            // ignore merge errors
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
+    };
+
+    window.addEventListener("beforeunload", saveAndFlag);
+    window.addEventListener("pagehide", saveAndFlag);
+
+    return () => {
+      window.removeEventListener("beforeunload", saveAndFlag);
+      window.removeEventListener("pagehide", saveAndFlag);
+    };
+  }, [comic.id, recordHistory, startChapterNumber, startPage]);
 
   return (
     <div className="space-y-6">

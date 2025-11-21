@@ -43,7 +43,7 @@ export default function ComicDetailDialog({
 
       setChaptersLoading(true);
       try {
-        const comicData = await getComicWithChapters(comic.id);
+        const comicData = await getComicWithChapters(comic);
         if (!isCancelled) {
           setComicWithChapters(comicData || { ...comic, chapters: [] });
         }
@@ -140,31 +140,31 @@ export default function ComicDetailDialog({
                       }`;
                     return (
                       <li key={chapterKey}>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onStartReading?.(chapter.id || chapter.chapter_id)
-                        }
-                        className="flex w-full items-center justify-between rounded-xl border border-zinc-200 px-4 py-2 text-left transition hover:border-zinc-400 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:border-zinc-500 dark:hover:bg-zinc-800"
-                      >
-                        <span className="font-medium text-zinc-800 dark:text-zinc-200">
-                          Chapter {chapter.number || chapter.chapter_number}
-                          {chapter.title &&
-                            chapter.title !==
-                              `Chapter ${
-                                chapter.number || chapter.chapter_number
-                              }` && (
-                              <span className="ml-2 text-xs text-zinc-500">
-                                - {chapter.title}
-                              </span>
-                            )}
-                        </span>
-                        <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                          {chapter.pages?.length
-                            ? `${chapter.pages.length} halaman`
-                            : "Tersedia"}
-                        </span>
-                      </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onStartReading?.(chapter.id || chapter.chapter_id)
+                          }
+                          className="flex w-full items-center justify-between rounded-xl border border-zinc-200 px-4 py-2 text-left transition hover:border-zinc-400 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:border-zinc-500 dark:hover:bg-zinc-800"
+                        >
+                          <span className="font-medium text-zinc-800 dark:text-zinc-200">
+                            Chapter {chapter.number || chapter.chapter_number}
+                            {chapter.title &&
+                              chapter.title !==
+                                `Chapter ${
+                                  chapter.number || chapter.chapter_number
+                                }` && (
+                                <span className="ml-2 text-xs text-zinc-500">
+                                  - {chapter.title}
+                                </span>
+                              )}
+                          </span>
+                          <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                            {chapter.pages?.length
+                              ? `${chapter.pages.length} halaman`
+                              : "Tersedia"}
+                          </span>
+                        </button>
                       </li>
                     );
                   })

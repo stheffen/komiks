@@ -18,7 +18,7 @@ export default function ComicCard({
 
   return (
     <article className="group flex h-full flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-md dark:border-zinc-800/80 dark:bg-zinc-900">
-      <div className="relative aspect-[3/4] w-full overflow-hidden bg-zinc-100 dark:bg-zinc-800/60">
+      <div className="relative aspect-3/4 w-full overflow-hidden bg-zinc-100 dark:bg-zinc-800/60">
         <Image
           src={comic.cover}
           alt={comic.title}
@@ -27,7 +27,7 @@ export default function ComicCard({
           className="object-cover transition duration-500 group-hover:scale-105"
           unoptimized
         />
-        <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent opacity-60 transition group-hover:opacity-70" />
+        <div className="absolute inset-0 bg-linear-to-t from-black/70 via-black/20 to-transparent opacity-60 transition group-hover:opacity-70" />
       </div>
       <div className="flex flex-1 flex-col gap-3 px-4 py-4">
         <header className="flex items-start justify-between gap-3">

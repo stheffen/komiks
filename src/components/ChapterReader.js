@@ -48,7 +48,6 @@ export default function ChapterReader({
   const controlsWrapperRef = useRef(null);
   const clickCounterRef = useRef(0);
 
-
   const chapterNumbers = useMemo(
     () =>
       comic.chapters
@@ -68,8 +67,12 @@ export default function ChapterReader({
 
   const getScrollTop = useCallback((root) => {
     if (!root) return 0;
-    if (root === window) return window.scrollY || document.documentElement.scrollTop || 0;
-    if (root === document.scrollingElement || root === document.documentElement) {
+    if (root === window)
+      return window.scrollY || document.documentElement.scrollTop || 0;
+    if (
+      root === document.scrollingElement ||
+      root === document.documentElement
+    ) {
       return document.documentElement.scrollTop || document.body.scrollTop || 0;
     }
     return root.scrollTop;
@@ -81,7 +84,10 @@ export default function ChapterReader({
       window.scrollTo({ top: value });
       return;
     }
-    if (root === document.scrollingElement || root === document.documentElement) {
+    if (
+      root === document.scrollingElement ||
+      root === document.documentElement
+    ) {
       document.documentElement.scrollTop = value;
       document.body.scrollTop = value;
       return;
@@ -92,13 +98,24 @@ export default function ChapterReader({
   const getMaxScroll = useCallback((root) => {
     if (!root) return 0;
     if (root === window) {
-      const dh = document.documentElement.scrollHeight || document.body.scrollHeight || 0;
-      const wh = window.innerHeight || document.documentElement.clientHeight || 0;
+      const dh =
+        document.documentElement.scrollHeight ||
+        document.body.scrollHeight ||
+        0;
+      const wh =
+        window.innerHeight || document.documentElement.clientHeight || 0;
       return Math.max(0, dh - wh);
     }
-    if (root === document.scrollingElement || root === document.documentElement) {
-      const dh = document.documentElement.scrollHeight || document.body.scrollHeight || 0;
-      const wh = window.innerHeight || document.documentElement.clientHeight || 0;
+    if (
+      root === document.scrollingElement ||
+      root === document.documentElement
+    ) {
+      const dh =
+        document.documentElement.scrollHeight ||
+        document.body.scrollHeight ||
+        0;
+      const wh =
+        window.innerHeight || document.documentElement.clientHeight || 0;
       return Math.max(0, dh - wh);
     }
     return Math.max(0, root.scrollHeight - root.clientHeight);
@@ -123,7 +140,10 @@ export default function ChapterReader({
       if (!chapter) return;
       const chapterId = chapter.id || chapter.chapter_id;
       if (!chapterId) return;
-      if (chaptersWithPages[chapterNumber] || loadingChapters.has(chapterNumber)) {
+      if (
+        chaptersWithPages[chapterNumber] ||
+        loadingChapters.has(chapterNumber)
+      ) {
         return;
       }
       setLoadingChapters((prev) => {
@@ -181,7 +201,9 @@ export default function ChapterReader({
     setVisibleChapters((chapters) => {
       if (chapters.length === 0) return chapters;
       const currentMax = Math.max(...chapters);
-      const availableNext = chapterNumbers.find((number) => number > currentMax);
+      const availableNext = chapterNumbers.find(
+        (number) => number > currentMax
+      );
       if (!availableNext) return chapters;
       if (chapters.includes(availableNext)) return chapters;
       return [...chapters, availableNext].sort((a, b) => a - b);
@@ -196,9 +218,13 @@ export default function ChapterReader({
       typeof window !== "undefined"
         ? window.innerHeight || document.documentElement.clientHeight || 0
         : 0;
-    const rootRect = root ? root.getBoundingClientRect() : { top: 0, bottom: viewportHeight };
+    const rootRect = root
+      ? root.getBoundingClientRect()
+      : { top: 0, bottom: viewportHeight };
     const effectiveTop = hasScrollableContainer ? rootRect.top : 0;
-    const effectiveBottom = hasScrollableContainer ? rootRect.bottom : viewportHeight;
+    const effectiveBottom = hasScrollableContainer
+      ? rootRect.bottom
+      : viewportHeight;
 
     let bestMatch = null;
 
@@ -240,14 +266,15 @@ export default function ChapterReader({
       const max = getMaxScroll(root);
       const clientHeight =
         root === window
-          ? (window.innerHeight || document.documentElement.clientHeight || 0)
-          : (root?.clientHeight ?? 0);
+          ? window.innerHeight || document.documentElement.clientHeight || 0
+          : root?.clientHeight ?? 0;
 
       // If auto-scroll running via ref, this scroll might be from auto-scroll; otherwise treat as user scroll
       if (!isAutoScrollingRef.current) {
         if (!isUserScrollingRef.current) {
           isUserScrollingRef.current = true;
-          if (userScrollTimeoutRef.current) clearTimeout(userScrollTimeoutRef.current);
+          if (userScrollTimeoutRef.current)
+            clearTimeout(userScrollTimeoutRef.current);
           userScrollTimeoutRef.current = setTimeout(() => {
             isUserScrollingRef.current = false;
           }, 1000);
@@ -266,7 +293,13 @@ export default function ChapterReader({
       // update which page/chapter is active
       updateActiveFromScroll();
     },
-    [getRootForScroll, getScrollTop, getMaxScroll, loadNextChapter, updateActiveFromScroll]
+    [
+      getRootForScroll,
+      getScrollTop,
+      getMaxScroll,
+      loadNextChapter,
+      updateActiveFromScroll,
+    ]
   );
 
   // add wheel/touch listeners to both container and window (to detect user interrupt)
@@ -289,7 +322,9 @@ export default function ChapterReader({
 
     if (container) {
       container.addEventListener("wheel", handleWheel, { passive: true });
-      container.addEventListener("touchstart", handleTouchStart, { passive: true });
+      container.addEventListener("touchstart", handleTouchStart, {
+        passive: true,
+      });
     }
     window.addEventListener("wheel", handleWheel, { passive: true });
     window.addEventListener("touchstart", handleTouchStart, { passive: true });
@@ -389,13 +424,23 @@ export default function ChapterReader({
         autoScrollFrameRef.current = null;
       }
     };
-  }, [isAutoScrolling, scrollSpeed, getRootForScroll, loadNextChapter, getMaxScroll, getScrollTop, setScrollTop]);
+  }, [
+    isAutoScrolling,
+    scrollSpeed,
+    getRootForScroll,
+    loadNextChapter,
+    getMaxScroll,
+    getScrollTop,
+    setScrollTop,
+  ]);
 
   // cleanup on unmount
   useEffect(() => {
     return () => {
-      if (autoScrollFrameRef.current) cancelAnimationFrame(autoScrollFrameRef.current);
-      if (userScrollTimeoutRef.current) clearTimeout(userScrollTimeoutRef.current);
+      if (autoScrollFrameRef.current)
+        cancelAnimationFrame(autoScrollFrameRef.current);
+      if (userScrollTimeoutRef.current)
+        clearTimeout(userScrollTimeoutRef.current);
     };
   }, []);
 
@@ -426,47 +471,51 @@ export default function ChapterReader({
   useEffect(() => {
     const handler = (e) => {
       const target = e.target;
-  
+
       // Jika klik berasal dari tombol atau UI control → abaikan
-      if (controlsWrapperRef.current && controlsWrapperRef.current.contains(target)) return;
-  
+      if (
+        controlsWrapperRef.current &&
+        controlsWrapperRef.current.contains(target)
+      )
+        return;
+
       // Jika klik berasal dari area reader → abaikan (sesuai logicmu sekarang)
       if (containerRef.current && containerRef.current.contains(target)) return;
-  
+
       // == Double-click logic ==
       clickCounterRef.current += 1;
-  
+
       // Reset setelah 300ms jika tidak jadi double-click
       setTimeout(() => {
         clickCounterRef.current = 0;
       }, 300);
-  
+
       // Jika belum 2x klik → jangan lakukan apa pun
       if (clickCounterRef.current < 2) return;
-  
+
       // Jika sudah 2x klik → toggle
       setControlsVisible((prev) => !prev);
-  
+
       // Reset counter
       clickCounterRef.current = 0;
     };
-  
+
     document.addEventListener("click", handler);
     document.addEventListener("touchstart", handler, { passive: true });
     document.addEventListener("pointerdown", handler);
-  
+
     return () => {
       document.removeEventListener("click", handler);
       document.removeEventListener("touchstart", handler);
       document.removeEventListener("pointerdown", handler);
     };
   }, []);
-  
 
   useEffect(() => {
     if (!pendingInitialScroll.current) return;
     const chapterNodes = pageRefs.current[initialChapterNumber];
-    const targetNode = chapterNodes?.[Math.max(0, initialPageNumber - 1)] ?? null;
+    const targetNode =
+      chapterNodes?.[Math.max(0, initialPageNumber - 1)] ?? null;
     if (!targetNode) return;
     // still pending; perform scroll then mark finished
     requestAnimationFrame(() => {
@@ -481,7 +530,13 @@ export default function ChapterReader({
         updateActiveFromScroll();
       });
     });
-  }, [initialChapterNumber, initialPageNumber, chaptersWithPages, visibleChapters, updateActiveFromScroll]);
+  }, [
+    initialChapterNumber,
+    initialPageNumber,
+    chaptersWithPages,
+    visibleChapters,
+    updateActiveFromScroll,
+  ]);
 
   useEffect(() => {
     if (!comic?.id || !onProgress) return;
@@ -560,7 +615,9 @@ export default function ChapterReader({
                 className="space-y-6"
               >
                 <div className="sticky top-4 z-20 flex items-center justify-between rounded-full bg-white/90 px-4 py-2 text-sm font-semibold text-zinc-700 shadow dark:bg-zinc-900/90 dark:text-zinc-200">
-                  <span>Chapter {chapter.number || chapter.chapter_number}</span>
+                  <span>
+                    Chapter {chapter.number || chapter.chapter_number}
+                  </span>
                   <span>
                     {loadingChapters.has(normalizedNumber)
                       ? "Memuat..."
@@ -569,7 +626,7 @@ export default function ChapterReader({
                       : "Memuat halaman..."}
                   </span>
                 </div>
-                <div className="flex flex-col gap-4">
+                <div className="flex flex-col">
                   {loadingChapters.has(normalizedNumber) ? (
                     <div className="py-12 text-center text-sm text-zinc-500 dark:text-zinc-400">
                       Memuat halaman chapter...
@@ -586,7 +643,7 @@ export default function ChapterReader({
                             pageRefs.current[normalizedNumber][index] = node;
                           }
                         }}
-                        className="overflow-hidden rounded-2xl border border-zinc-200 bg-zinc-50 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+                        className="overflow-hidden dark:bg-zinc-900"
                         data-chapter={normalizedNumber}
                         data-page={index + 1}
                       >
@@ -602,9 +659,6 @@ export default function ChapterReader({
                           sizes="(max-width: 768px) 90vw, 60vw"
                           unoptimized
                         />
-                        <figcaption className="px-4 py-2 text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                          Halaman {index + 1}
-                        </figcaption>
                       </figure>
                     ))
                   ) : (
@@ -620,10 +674,9 @@ export default function ChapterReader({
       </div>
 
       <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-3">
-        
         {controlsVisible && (
           <div
-            ref={controlsWrapperRef}    
+            ref={controlsWrapperRef}
             onClick={(e) => e.stopPropagation()}
             onTouchStart={(e) => e.stopPropagation()}
             className="flex flex-col items-end gap-3"
@@ -644,16 +697,23 @@ export default function ChapterReader({
                   onChange={(e) => setScrollSpeed(parseFloat(e.target.value))}
                   className="h-2 w-24 cursor-pointer appearance-none rounded-full bg-zinc-300 dark:bg-zinc-700"
                   style={{
-                    background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${((scrollSpeed - 0.5) / 10) * 100}%, #d1d5db ${((scrollSpeed - 0.5) / 4.5) * 100}%, #d1d5db 100%)`
+                    background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${
+                      ((scrollSpeed - 0.5) / 10) * 100
+                    }%, #d1d5db ${
+                      ((scrollSpeed - 0.5) / 4.5) * 100
+                    }%, #d1d5db 100%)`,
                   }}
                 />
-                <span className="min-w-[2.5rem] text-xs font-semibold text-zinc-700 dark:text-zinc-300 text-center">
+                <span className="min-w-10 text-xs font-semibold text-zinc-700 dark:text-zinc-300 text-center">
                   {scrollSpeed.toFixed(1)}x
                 </span>
                 {!isAutoScrolling && (
                   <button
                     type="button"
-                    onClick={(e) => { e.stopPropagation(); setShowSpeedControl(false); }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowSpeedControl(false);
+                    }}
                     className="ml-1 text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
                     title="Tutup"
                   >
@@ -667,7 +727,10 @@ export default function ChapterReader({
               {!showSpeedControl && !isAutoScrolling && (
                 <button
                   type="button"
-                  onClick={(e) => { e.stopPropagation(); setShowSpeedControl(true); }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowSpeedControl(true);
+                  }}
                   className="flex items-center justify-center rounded-full bg-zinc-800/90 px-3 py-2.5 text-xs font-medium text-white shadow-lg transition-all hover:scale-105 active:scale-95 dark:bg-white/90 dark:text-zinc-900"
                   title="Pengaturan kecepatan"
                 >
@@ -676,13 +739,18 @@ export default function ChapterReader({
               )}
               <button
                 type="button"
-                onClick={(e) => { e.stopPropagation(); toggleAutoScroll(); }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleAutoScroll();
+                }}
                 className={`flex items-center justify-center gap-2 rounded-full px-5 py-3 text-sm font-semibold shadow-lg transition-all hover:scale-105 active:scale-95 ${
                   isAutoScrolling
                     ? "bg-green-500 text-white hover:bg-green-600"
                     : "bg-zinc-900 text-white hover:bg-zinc-800 dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100"
                 }`}
-                title={isAutoScrolling ? "Hentikan auto-scroll" : "Mulai auto-scroll"}
+                title={
+                  isAutoScrolling ? "Hentikan auto-scroll" : "Mulai auto-scroll"
+                }
               >
                 <span className="text-lg">{isAutoScrolling ? "⏸" : "▶"}</span>
                 <span>{isAutoScrolling ? "Pause" : "Auto Scroll"}</span>

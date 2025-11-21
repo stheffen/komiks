@@ -2,6 +2,7 @@ import {
   getTopComics,
   getComicsList,
   searchComics as apiSearchComics,
+  getMangaDetail,
   getComicChapters,
   getChapterDetail,
   mapApiMangaToComic,
@@ -50,7 +51,7 @@ export async function getComics() {
  */
 export async function getComicById(id) {
   // First check cache
-  const cached = cachedComics.find((comic) => comic.id === id);
+  const cached = cachedComics.find((comic) => String(comic.id) === String(id));
   if (cached) {
     return cached;
   }
@@ -60,12 +61,41 @@ export async function getComicById(id) {
     const response = await getComicsList(1, 100);
     if (response.retcode === 0 && response.data) {
       const comics = response.data.map(mapApiMangaToComic);
-      cachedComics = [...cachedComics, ...comics];
-      const found = comics.find((comic) => comic.id === id);
+      // ensure ids are strings and merge into cache without duplicates
+      const existingIds = new Set(cachedComics.map((c) => String(c.id)));
+      const toAdd = comics.filter((c) => !existingIds.has(String(c.id)));
+      if (toAdd.length > 0) cachedComics = [...cachedComics, ...toAdd];
+      const found = cachedComics.find(
+        (comic) => String(comic.id) === String(id)
+      );
       if (found) return found;
     }
   } catch (error) {
     console.error("Error fetching comic by ID:", error);
+  }
+
+  // As a last resort, try fetching single manga detail directly
+  // Validate id shape before attempting single-detail endpoint.
+  // Some parts of the app may accidentally pass a chapter number (e.g. "781")
+  // instead of a manga UUID; avoid calling getMangaDetail with such values
+  // because it results in requests like /manga/781 which return 404 and are noisy.
+  const looksLikeUuid = (val) =>
+    typeof val === "string" && val.includes("-") && val.length > 10;
+  if (looksLikeUuid(id)) {
+    try {
+      const single = await getMangaDetail(id);
+      if (single) {
+        const mapped = mapApiMangaToComic(single);
+        // merge into cache
+        cachedComics.push(mapped);
+        return mapped;
+      }
+    } catch (err) {
+      console.debug("getMangaDetail failed:", err.message || err);
+    }
+  } else {
+    // skip calling single-detail endpoint for obvious non-UUID ids
+    console.debug("Skipping getMangaDetail for id (not UUID):", id);
   }
 
   return null;
@@ -84,7 +114,22 @@ export async function searchComics(term) {
   try {
     const response = await apiSearchComics(term.trim());
     if (response.retcode === 0 && response.data) {
-      return response.data.map(mapApiMangaToComic);
+      const results = response.data.map(mapApiMangaToComic);
+
+      // Merge search results into cache so subsequent lookups (e.g., getComicById)
+      // can find comics that were returned by search but not present in cachedComics.
+      try {
+        const existingIds = new Set(cachedComics.map((c) => c.id));
+        const toAdd = results.filter((c) => !existingIds.has(c.id));
+        if (toAdd.length > 0) {
+          cachedComics = [...cachedComics, ...toAdd];
+        }
+      } catch (e) {
+        // ignore cache merge errors — still return results
+        console.warn("Failed to merge search results into cache:", e);
+      }
+
+      return results;
     }
     return [];
   } catch (error) {
@@ -98,13 +143,29 @@ export async function searchComics(term) {
  * @param {string} id - Comic ID
  * @returns {Promise<Object|null>} Comic with chapters
  */
-export async function getComicWithChapters(id) {
-  const comic = await getComicById(id);
+export async function getComicWithChapters(idOrComic) {
+  // Accept either an id string or a comic object (from search results)
+  const isObject = typeof idOrComic === "object" && idOrComic !== null;
+  const id = isObject ? idOrComic.id : idOrComic;
+
+  // Try to get comic from cache first
+  let comic = null;
+  try {
+    comic = await getComicById(id);
+  } catch (e) {
+    comic = null;
+  }
+
+  // If not found in cache, but caller provided a comic object, use it as base
+  if (!comic && isObject) {
+    comic = idOrComic;
+  }
+
   if (!comic) return null;
 
   try {
     const response = await getComicChapters(id);
-    if (response.retcode === 0 && response.data) {
+    if (response && response.retcode === 0 && response.data) {
       const chapters = response.data.map((ch) =>
         mapApiChapterToChapter(ch, id)
       );
@@ -117,7 +178,7 @@ export async function getComicWithChapters(id) {
     console.error("Error fetching comic chapters:", error);
   }
 
-  // Return comic without chapters if fetch fails
+  // Return comic with empty chapters if fetch fails
   return {
     ...comic,
     chapters: [],
