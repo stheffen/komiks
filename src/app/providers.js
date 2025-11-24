@@ -12,6 +12,10 @@ export default function Providers({ children }) {
   const [showBanner, setShowBanner] = useState(false);
   const timeoutRef = useRef(null);
 
+  // NEW: navVisible state controls whether NavigationBar is shown
+  // default true so desktop & initial view shows it
+  const [navVisible, setNavVisible] = useState(true);
+
   useEffect(() => {
     try {
       if (typeof window === "undefined") return;
@@ -105,6 +109,25 @@ export default function Providers({ children }) {
     router.replace("/jelajahi");
   };
 
+  // ---------------------------
+  // NEW: Listen for reader:controls events to toggle nav visibility
+  // Event detail: { visible: boolean, mobileOnly?: boolean }
+  // If mobileOnly is true, we only honor the event when window width < breakpoint
+  // ---------------------------
+  useEffect(() => {
+    const handleReaderControls = (e) => {
+      const detail = e?.detail || {};
+      if (typeof detail.visible !== "boolean") return;
+      const mobileOnly = Boolean(detail.mobileOnly);
+      const isMobileViewport = window.innerWidth < 768;
+      if (mobileOnly && !isMobileViewport) return;
+      setNavVisible(Boolean(detail.visible));
+    };
+    window.addEventListener("reader:controls", handleReaderControls);
+    return () =>
+      window.removeEventListener("reader:controls", handleReaderControls);
+  }, []);
+
   return (
     <ComicsProvider>
       <div className="min-h-screen bg-linear-to-br from-zinc-100 via-white to-zinc-100 text-zinc-900 dark:from-zinc-950 dark:via-zinc-900 dark:to-zinc-950 dark:text-zinc-100">
@@ -137,7 +160,12 @@ export default function Providers({ children }) {
             </div>
           </div>
         )}
-        <NavigationBar />
+
+        {/* Pass navVisible into NavigationBar so it can hide when false */}
+        {/* If your NavigationBar component accepts a prop like "visible", use it.
+            Otherwise we conditionally render it below. */}
+        {navVisible ? <NavigationBar /> : null}
+
         <main className="mx-auto flex w-full max-w-5xl flex-col gap-8 px-4 pb-20 pt-6 sm:px-6 lg:px-8">
           {children}
         </main>

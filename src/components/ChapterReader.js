@@ -5,6 +5,9 @@ import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { getChapterWithPages } from "@/data/comics";
 
 const BOTTOM_BUFFER = 180;
+const MAX_IMAGE_WIDTH = 900;
+const MOBILE_BREAKPOINT = 768;
+const EAGER_PAGES = 3;
 
 const toNumber = (value) => {
   if (value === null || value === undefined) return null;
@@ -22,6 +25,7 @@ export default function ChapterReader({
   const pageRefs = useRef({});
   const initialChapterNumber = toNumber(startChapterNumber) ?? 1;
   const initialPageNumber = toNumber(startPage) ?? 1;
+
   const [visibleChapters, setVisibleChapters] = useState(() => [
     initialChapterNumber,
   ]);
@@ -31,36 +35,87 @@ export default function ChapterReader({
   const [loadingChapters, setLoadingChapters] = useState(new Set());
   const pendingInitialScroll = useRef(true);
 
-  // Auto-scroll state + refs
+  // Auto-scroll & UI
   const [isAutoScrolling, setIsAutoScrolling] = useState(false);
-  const [scrollSpeed, setScrollSpeed] = useState(1); // multiplier (pixels/frame @60fps normalized)
+  const [scrollSpeed, setScrollSpeed] = useState(1); // multiplier
   const [showSpeedControl, setShowSpeedControl] = useState(false);
+  const [fpsLimit, setFpsLimit] = useState(60);
+  const fpsLimitRef = useRef(fpsLimit);
 
-  // Controls visibility state (toggle all floating controls with one click/tap)
+  // Controls visibility: when hidden on mobile they should be fully invisible
   const [controlsVisible, setControlsVisible] = useState(true);
+  const [isMobile, setIsMobile] = useState(false);
 
   // Realtime refs
   const isUserScrollingRef = useRef(false);
   const userScrollTimeoutRef = useRef(null);
   const isAutoScrollingRef = useRef(false);
-  const autoScrollFrameRef = useRef(null);
-  const lastTimeRef = useRef(0);
+  const rafRef = useRef(null);
+  const lastFrameTimeRef = useRef(0);
+
+  // Virtual scroll position (float) & smoothing
+  const virtualScrollPosRef = useRef(0);
+  // TUNED: smaller max step, slightly higher lerp for balanced smoothness & responsiveness
+  const smoothingRef = useRef({ lerpFactor: 0.22, maxStepPerFrame: 24 });
+
+  // Tap detection for container
+  const touchStartRef = useRef({ x: 0, y: 0, time: 0 });
+  const touchThreshold = { maxTime: 300, maxMove: 14 };
   const controlsWrapperRef = useRef(null);
-  const clickCounterRef = useRef(0);
+
+  // Observers
+  const viewportObserverRef = useRef(null);
+  const containerObserverRef = useRef(null);
+  const pendingObserveQueue = useRef([]);
+  const lastReportedRef = useRef({
+    chapter: initialChapterNumber,
+    page: initialPageNumber,
+  });
 
   const chapterNumbers = useMemo(
     () =>
-      comic.chapters
-        .map((chapter) => toNumber(chapter.number ?? chapter.chapter_number))
-        .filter((num) => typeof num === "number" && !Number.isNaN(num))
+      (comic?.chapters || [])
+        .map((ch) => toNumber(ch.number ?? ch.chapter_number))
+        .filter((n) => typeof n === "number" && !Number.isNaN(n))
         .sort((a, b) => a - b),
-    [comic.chapters]
+    [comic?.chapters]
   );
 
-  // basic helpers to support element or document scrolling
+  // Broadcast controlsVisible and auto-scroll state to Providers (NavigationBar)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      // Visible = true when controlsVisible && not auto-scrolling on mobile
+      const visibleForNav = !(isMobile && (isAutoScrolling || !controlsVisible))
+        ? true
+        : false;
+      const detail = { visible: visibleForNav, mobileOnly: true };
+      window.dispatchEvent(new CustomEvent("reader:controls", { detail }));
+    } catch (e) {
+      // ignore
+    }
+  }, [controlsVisible, isAutoScrolling, isMobile]);
+
+  useEffect(() => {
+    fpsLimitRef.current = fpsLimit;
+  }, [fpsLimit]);
+
+  // detect mobile (touch or narrow)
+  useEffect(() => {
+    function checkMobile() {
+      const touch = typeof window !== "undefined" && "ontouchstart" in window;
+      const narrow =
+        typeof window !== "undefined" && window.innerWidth < MOBILE_BREAKPOINT;
+      setIsMobile(Boolean(touch || narrow));
+    }
+    checkMobile();
+    window.addEventListener("resize", checkMobile);
+    return () => window.removeEventListener("resize", checkMobile);
+  }, []);
+
+  // --- scroll helpers ---
   const getRootForScroll = useCallback(() => {
     const c = containerRef.current;
-    // If container exists and is scrollable, use it. Otherwise fall back to document scrolling element
     if (c && c.scrollHeight - c.clientHeight > 8) return c;
     return document.scrollingElement || document.documentElement || window;
   }, []);
@@ -69,12 +124,8 @@ export default function ChapterReader({
     if (!root) return 0;
     if (root === window)
       return window.scrollY || document.documentElement.scrollTop || 0;
-    if (
-      root === document.scrollingElement ||
-      root === document.documentElement
-    ) {
+    if (root === document.scrollingElement || root === document.documentElement)
       return document.documentElement.scrollTop || document.body.scrollTop || 0;
-    }
     return root.scrollTop;
   }, []);
 
@@ -97,16 +148,8 @@ export default function ChapterReader({
 
   const getMaxScroll = useCallback((root) => {
     if (!root) return 0;
-    if (root === window) {
-      const dh =
-        document.documentElement.scrollHeight ||
-        document.body.scrollHeight ||
-        0;
-      const wh =
-        window.innerHeight || document.documentElement.clientHeight || 0;
-      return Math.max(0, dh - wh);
-    }
     if (
+      root === window ||
       root === document.scrollingElement ||
       root === document.documentElement
     ) {
@@ -121,19 +164,18 @@ export default function ChapterReader({
     return Math.max(0, root.scrollHeight - root.clientHeight);
   }, []);
 
-  // Find chapter by number
+  // --- chapters loading ---
   const findChapter = useCallback(
     (number) => {
       const target = toNumber(number);
       if (target === null) return null;
-      return comic.chapters.find(
+      return (comic?.chapters || []).find(
         (ch) => toNumber(ch.number ?? ch.chapter_number) === target
       );
     },
-    [comic.chapters]
+    [comic]
   );
 
-  // Load chapter pages
   const loadChapterPages = useCallback(
     async (chapterNumber) => {
       const chapter = findChapter(chapterNumber);
@@ -143,27 +185,25 @@ export default function ChapterReader({
       if (
         chaptersWithPages[chapterNumber] ||
         loadingChapters.has(chapterNumber)
-      ) {
+      )
         return;
-      }
+
       setLoadingChapters((prev) => {
         const next = new Set(prev);
         next.add(chapterNumber);
         return next;
       });
+
       try {
         const chapterData = await getChapterWithPages(chapterId);
         if (chapterData && chapterData.pages) {
           setChaptersWithPages((prev) => ({
             ...prev,
-            [chapterNumber]: {
-              ...chapter,
-              pages: chapterData.pages,
-            },
+            [chapterNumber]: { ...chapter, pages: chapterData.pages },
           }));
         }
-      } catch (error) {
-        console.error(`Error loading chapter ${chapterNumber}:`, error);
+      } catch (err) {
+        console.error("Error loading chapter", chapterNumber, err);
       } finally {
         setLoadingChapters((prev) => {
           const next = new Set(prev);
@@ -175,11 +215,8 @@ export default function ChapterReader({
     [findChapter, chaptersWithPages, loadingChapters]
   );
 
-  // Load pages for visible chapters
   useEffect(() => {
-    visibleChapters.forEach((number) => {
-      loadChapterPages(number);
-    });
+    visibleChapters.forEach((n) => loadChapterPages(n));
   }, [visibleChapters, loadChapterPages]);
 
   useEffect(() => {
@@ -187,7 +224,7 @@ export default function ChapterReader({
     if ((initialPageNumber ?? 1) <= 1) {
       try {
         containerRef.current.scrollTo({ top: 0, behavior: "auto" });
-      } catch (e) {
+      } catch {
         containerRef.current.scrollTop = 0;
       }
     }
@@ -210,66 +247,131 @@ export default function ChapterReader({
     });
   }, [chapterNumbers]);
 
+  // --- IntersectionObserver for active page ---
+  const intersectionCallback = useCallback((entries) => {
+    let best = null;
+    entries.forEach((entry) => {
+      const t = entry.target;
+      if (!t || !t.dataset) return;
+      const ch = Number(t.dataset.chapter),
+        pg = Number(t.dataset.page),
+        ratio = entry.intersectionRatio;
+      if (entry.isIntersecting || ratio > 0) {
+        if (!best || ratio > best.ratio)
+          best = { ratio, chapter: ch, page: pg };
+      }
+    });
+    if (best) {
+      const last = lastReportedRef.current;
+      if (last.chapter !== best.chapter || last.page !== best.page) {
+        lastReportedRef.current = { chapter: best.chapter, page: best.page };
+        setActiveChapter(best.chapter);
+        setActivePage(best.page);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!viewportObserverRef.current) {
+      viewportObserverRef.current = new IntersectionObserver(
+        intersectionCallback,
+        {
+          root: null,
+          rootMargin: "0px 0px -40% 0px",
+          threshold: [0, 0.25, 0.5, 0.75, 1],
+        }
+      );
+    }
+    return () => {
+      if (viewportObserverRef.current) {
+        viewportObserverRef.current.disconnect();
+        viewportObserverRef.current = null;
+      }
+    };
+  }, [intersectionCallback]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) {
+      if (containerObserverRef.current) {
+        containerObserverRef.current.disconnect();
+        containerObserverRef.current = null;
+      }
+      return;
+    }
+    if (!containerObserverRef.current) {
+      containerObserverRef.current = new IntersectionObserver(
+        intersectionCallback,
+        {
+          root: container,
+          rootMargin: "0px 0px -40% 0px",
+          threshold: [0, 0.25, 0.5, 0.75, 1],
+        }
+      );
+    }
+    return () => {
+      if (containerObserverRef.current) {
+        containerObserverRef.current.disconnect();
+        containerObserverRef.current = null;
+      }
+    };
+  }, [containerRef.current, intersectionCallback]);
+
+  useEffect(() => {
+    if (!pendingObserveQueue.current.length) return;
+    while (pendingObserveQueue.current.length) {
+      const node = pendingObserveQueue.current.shift();
+      if (!node) continue;
+      try {
+        const useContainer =
+          containerRef.current && containerRef.current.contains(node);
+        if (useContainer && containerObserverRef.current)
+          containerObserverRef.current.observe(node);
+        else if (viewportObserverRef.current)
+          viewportObserverRef.current.observe(node);
+      } catch (e) {}
+    }
+  }, [chaptersWithPages, visibleChapters]);
+
+  // fallback active calc
   const updateActiveFromScroll = useCallback(() => {
     const root = containerRef.current;
-    const hasScrollableContainer =
-      root && root.scrollHeight - root.clientHeight > 8;
-    const viewportHeight =
+    const hasContainer = root && root.scrollHeight - root.clientHeight > 8;
+    const vh =
       typeof window !== "undefined"
         ? window.innerHeight || document.documentElement.clientHeight || 0
         : 0;
     const rootRect = root
       ? root.getBoundingClientRect()
-      : { top: 0, bottom: viewportHeight };
-    const effectiveTop = hasScrollableContainer ? rootRect.top : 0;
-    const effectiveBottom = hasScrollableContainer
-      ? rootRect.bottom
-      : viewportHeight;
-
-    let bestMatch = null;
-
-    Object.entries(pageRefs.current).forEach(([chapterKey, nodes]) => {
-      nodes.forEach((node, index) => {
+      : { top: 0, bottom: vh };
+    const effTop = hasContainer ? rootRect.top : 0;
+    const effBottom = hasContainer ? rootRect.bottom : vh;
+    let best = null;
+    Object.entries(pageRefs.current).forEach(([ch, nodes]) => {
+      nodes.forEach((node, idx) => {
         if (!node) return;
         const rect = node.getBoundingClientRect();
-        const visibleTop = Math.max(rect.top, effectiveTop);
-        const visibleBottom = Math.min(rect.bottom, effectiveBottom);
-        const visibleHeight = visibleBottom - visibleTop;
-        if (visibleHeight <= 0) return;
-        const ratio = visibleHeight / rect.height;
-        if (!bestMatch || ratio > bestMatch.ratio) {
-          bestMatch = {
-            ratio,
-            chapter: Number(chapterKey),
-            page: index + 1,
-          };
-        }
+        const vtop = Math.max(rect.top, effTop);
+        const vbot = Math.min(rect.bottom, effBottom);
+        const vhgt = vbot - vtop;
+        if (vhgt <= 0) return;
+        const ratio = vhgt / rect.height;
+        if (!best || ratio > best.ratio)
+          best = { ratio, chapter: Number(ch), page: idx + 1 };
       });
     });
-
-    if (bestMatch) {
-      if (!Number.isNaN(bestMatch.chapter)) {
-        setActiveChapter(bestMatch.chapter);
-      }
-      if (!Number.isNaN(bestMatch.page)) {
-        setActivePage(bestMatch.page);
-      }
+    if (best) {
+      if (!Number.isNaN(best.chapter)) setActiveChapter(best.chapter);
+      if (!Number.isNaN(best.page)) setActivePage(best.page);
     }
   }, []);
 
-  // handleScroll: use canonical root for scroll calculations
+  // lightweight scroll handler
   const handleScroll = useCallback(
-    (event) => {
-      // Use canonical root instead of event target
+    (e) => {
       const root = getRootForScroll();
-      const scrollTop = getScrollTop(root);
+      const st = getScrollTop(root);
       const max = getMaxScroll(root);
-      const clientHeight =
-        root === window
-          ? window.innerHeight || document.documentElement.clientHeight || 0
-          : root?.clientHeight ?? 0;
-
-      // If auto-scroll running via ref, this scroll might be from auto-scroll; otherwise treat as user scroll
       if (!isAutoScrollingRef.current) {
         if (!isUserScrollingRef.current) {
           isUserScrollingRef.current = true;
@@ -277,99 +379,77 @@ export default function ChapterReader({
             clearTimeout(userScrollTimeoutRef.current);
           userScrollTimeoutRef.current = setTimeout(() => {
             isUserScrollingRef.current = false;
-          }, 1000);
+          }, 800);
           if (isAutoScrollingRef.current) {
             isAutoScrollingRef.current = false;
             setIsAutoScrolling(false);
           }
         }
       }
-
-      // If we're near the bottom, load next chapter
-      if (max - scrollTop <= BOTTOM_BUFFER) {
-        loadNextChapter();
-      }
-
-      // update which page/chapter is active
-      updateActiveFromScroll();
+      if (max - st <= BOTTOM_BUFFER) loadNextChapter();
     },
-    [
-      getRootForScroll,
-      getScrollTop,
-      getMaxScroll,
-      loadNextChapter,
-      updateActiveFromScroll,
-    ]
+    [getRootForScroll, getScrollTop, getMaxScroll, loadNextChapter]
   );
 
-  // add wheel/touch listeners to both container and window (to detect user interrupt)
+  // interrupt auto-scroll on user interaction (wheel/touch)
   useEffect(() => {
     const container = containerRef.current;
-    const handleWheel = () => {
+    const onWheel = () => {
       if (isAutoScrollingRef.current) {
         isAutoScrollingRef.current = false;
         setIsAutoScrolling(false);
         isUserScrollingRef.current = true;
       }
     };
-    const handleTouchStart = () => {
+    const onTouchStart = () => {
       if (isAutoScrollingRef.current) {
         isAutoScrollingRef.current = false;
         setIsAutoScrolling(false);
         isUserScrollingRef.current = true;
       }
     };
-
     if (container) {
-      container.addEventListener("wheel", handleWheel, { passive: true });
-      container.addEventListener("touchstart", handleTouchStart, {
-        passive: true,
-      });
+      container.addEventListener("wheel", onWheel, { passive: true });
+      container.addEventListener("touchstart", onTouchStart, { passive: true });
     }
-    window.addEventListener("wheel", handleWheel, { passive: true });
-    window.addEventListener("touchstart", handleTouchStart, { passive: true });
-
+    window.addEventListener("wheel", onWheel, { passive: true });
+    window.addEventListener("touchstart", onTouchStart, { passive: true });
     return () => {
       if (container) {
-        container.removeEventListener("wheel", handleWheel);
-        container.removeEventListener("touchstart", handleTouchStart);
+        container.removeEventListener("wheel", onWheel);
+        container.removeEventListener("touchstart", onTouchStart);
       }
-      window.removeEventListener("wheel", handleWheel);
-      window.removeEventListener("touchstart", handleTouchStart);
+      window.removeEventListener("wheel", onWheel);
+      window.removeEventListener("touchstart", onTouchStart);
     };
   }, []);
 
-  // Ensure we listen for window scroll as well (when container isn't scrollable)
   useEffect(() => {
-    const onWindowScroll = (e) => {
-      // delegate to the same handler so logic stays centralized
-      handleScroll(e);
-    };
-
-    window.addEventListener("scroll", onWindowScroll, { passive: true });
-
-    return () => {
-      window.removeEventListener("scroll", onWindowScroll);
-    };
+    const onWindow = (e) => handleScroll(e);
+    window.addEventListener("scroll", onWindow, { passive: true });
+    return () => window.removeEventListener("scroll", onWindow);
   }, [handleScroll]);
 
-  // Auto-scroll effect: supports both container and window/document
+  // ---------- Smooth auto-scroll ----------
   useEffect(() => {
     const root = getRootForScroll();
-
     if (!root) {
       isAutoScrollingRef.current = false;
       return;
     }
-
     if (!isAutoScrolling) {
       isAutoScrollingRef.current = false;
-      if (autoScrollFrameRef.current) {
-        cancelAnimationFrame(autoScrollFrameRef.current);
-        autoScrollFrameRef.current = null;
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
       }
       return;
     }
+
+    virtualScrollPosRef.current = getScrollTop(root);
+    lastFrameTimeRef.current = performance.now();
+    isAutoScrollingRef.current = true;
+    isUserScrollingRef.current = false;
 
     const maxScroll = getMaxScroll(root);
     if (maxScroll <= 5) {
@@ -380,76 +460,101 @@ export default function ChapterReader({
       return;
     }
 
-    isAutoScrollingRef.current = true;
-    isUserScrollingRef.current = false;
-    lastTimeRef.current = performance.now();
+    // hide controls on mobile when auto-scroll starts
+    if (isMobile) setControlsVisible(false);
 
     const step = (time) => {
       const currentRoot = getRootForScroll();
       if (!isAutoScrollingRef.current || isUserScrollingRef.current) {
-        if (autoScrollFrameRef.current) {
-          cancelAnimationFrame(autoScrollFrameRef.current);
-          autoScrollFrameRef.current = null;
+        if (rafRef.current) {
+          cancelAnimationFrame(rafRef.current);
+          rafRef.current = null;
         }
         isAutoScrollingRef.current = false;
         setIsAutoScrolling(false);
         return;
       }
 
-      const max = getMaxScroll(currentRoot);
-      const cur = getScrollTop(currentRoot);
+      const frameDuration = 1000 / (fpsLimitRef.current || 60);
+      const since = time - lastFrameTimeRef.current;
+      if (since < 0) lastFrameTimeRef.current = time;
 
-      if (cur >= max - 5) {
-        isAutoScrollingRef.current = false;
-        setIsAutoScrolling(false);
-        loadNextChapter();
-        return;
+      if (since >= frameDuration) {
+        const moveAmount = (scrollSpeed * since) / 16;
+        virtualScrollPosRef.current += moveAmount;
+        const domPos = getScrollTop(currentRoot);
+        const target = Math.min(
+          virtualScrollPosRef.current,
+          getMaxScroll(currentRoot)
+        );
+        const diff = target - domPos;
+        const cap = smoothingRef.current.maxStepPerFrame;
+        const clamped = Math.max(-cap, Math.min(cap, diff));
+        const lerpFactor = smoothingRef.current.lerpFactor;
+        const applied = domPos + clamped * lerpFactor;
+        const writeTo = Math.round(applied);
+
+        try {
+          if (
+            currentRoot === window ||
+            currentRoot === document.scrollingElement ||
+            currentRoot === document.documentElement
+          ) {
+            // use scrollTo on window for consistent behavior
+            window.scrollTo({ top: writeTo });
+          } else {
+            currentRoot.scrollTo({ top: writeTo });
+          }
+        } catch (err) {
+          setScrollTop(currentRoot, writeTo);
+        }
+
+        lastFrameTimeRef.current = time;
       }
 
-      const delta = Math.min(time - lastTimeRef.current, 100);
-      const amount = (scrollSpeed * delta) / 16;
-      const newTop = Math.min(cur + amount, max);
-      setScrollTop(currentRoot, newTop);
-
-      lastTimeRef.current = time;
-      autoScrollFrameRef.current = requestAnimationFrame(step);
+      rafRef.current = requestAnimationFrame(step);
     };
 
-    autoScrollFrameRef.current = requestAnimationFrame(step);
+    rafRef.current = requestAnimationFrame(step);
 
     return () => {
       isAutoScrollingRef.current = false;
-      if (autoScrollFrameRef.current) {
-        cancelAnimationFrame(autoScrollFrameRef.current);
-        autoScrollFrameRef.current = null;
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
       }
+      if (!isMobile) setControlsVisible(true); // desktop: restore UI; mobile: keep hidden until tap
     };
   }, [
     isAutoScrolling,
     scrollSpeed,
+    fpsLimit,
+    isMobile,
     getRootForScroll,
-    loadNextChapter,
-    getMaxScroll,
     getScrollTop,
+    getMaxScroll,
+    loadNextChapter,
     setScrollTop,
   ]);
 
-  // cleanup on unmount
+  // cleanup
   useEffect(() => {
     return () => {
-      if (autoScrollFrameRef.current)
-        cancelAnimationFrame(autoScrollFrameRef.current);
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
       if (userScrollTimeoutRef.current)
         clearTimeout(userScrollTimeoutRef.current);
+      if (viewportObserverRef.current) viewportObserverRef.current.disconnect();
+      if (containerObserverRef.current)
+        containerObserverRef.current.disconnect();
+      viewportObserverRef.current = null;
+      containerObserverRef.current = null;
     };
   }, []);
 
-  // Toggle auto-scroll: choose proper root and start only if scrollable (or trigger load next)
   function toggleAutoScroll() {
     const root = getRootForScroll();
     const max = getMaxScroll(root);
     const canScroll = max > 12;
-
     if (!canScroll) {
       loadNextChapter();
       setShowSpeedControl(true);
@@ -460,64 +565,73 @@ export default function ChapterReader({
     isAutoScrollingRef.current = newValue;
     setIsAutoScrolling(newValue);
     if (newValue) {
-      // Starting auto-scroll: keep speed control visible if it was open
-      setControlsVisible(true);
-      isUserScrollingRef.current = false;
-      lastTimeRef.current = performance.now();
+      if (isMobile) setControlsVisible(false);
+      virtualScrollPosRef.current = getScrollTop(getRootForScroll());
+      lastFrameTimeRef.current = performance.now();
+    } else {
+      if (!isMobile) setControlsVisible(true);
     }
   }
 
-  // Global click/touch handler to toggle visibility of floating controls
+  // --- container touch handlers (RELIABLE while auto-scroll running) ---
   useEffect(() => {
-    const handler = (e) => {
-      const target = e.target;
+    const container = containerRef.current;
+    if (!container) return;
 
-      // Jika klik berasal dari tombol atau UI control → abaikan
-      if (
-        controlsWrapperRef.current &&
-        controlsWrapperRef.current.contains(target)
-      )
-        return;
-
-      // Jika klik berasal dari area reader → abaikan (sesuai logicmu sekarang)
-      if (containerRef.current && containerRef.current.contains(target)) return;
-
-      // == Double-click logic ==
-      clickCounterRef.current += 1;
-
-      // Reset setelah 300ms jika tidak jadi double-click
-      setTimeout(() => {
-        clickCounterRef.current = 0;
-      }, 300);
-
-      // Jika belum 2x klik → jangan lakukan apa pun
-      if (clickCounterRef.current < 2) return;
-
-      // Jika sudah 2x klik → toggle
-      setControlsVisible((prev) => !prev);
-
-      // Reset counter
-      clickCounterRef.current = 0;
+    const onTouchStart = (e) => {
+      const t = e.touches && e.touches[0];
+      touchStartRef.current = {
+        x: t ? t.clientX : 0,
+        y: t ? t.clientY : 0,
+        time: performance.now(),
+      };
     };
 
-    document.addEventListener("click", handler);
-    document.addEventListener("touchstart", handler, { passive: true });
-    document.addEventListener("pointerdown", handler);
+    const onTouchEnd = (e) => {
+      const s = touchStartRef.current;
+      const t = e.changedTouches && e.changedTouches[0];
+      const x = t ? t.clientX : 0,
+        y = t ? t.clientY : 0;
+      const dx = Math.abs(x - (s.x || 0)),
+        dy = Math.abs(y - (s.y || 0));
+      const dt = performance.now() - (s.time || 0);
+
+      // criteria for tap: short duration & little movement
+      if (
+        dt < touchThreshold.maxTime &&
+        Math.max(dx, dy) < touchThreshold.maxMove
+      ) {
+        // ignore taps on controls area
+        const target = e.target;
+        if (
+          controlsWrapperRef.current &&
+          controlsWrapperRef.current.contains(target)
+        )
+          return;
+
+        // toggle controlsVisible (show/hide)
+        setControlsVisible((prev) => !prev);
+
+        // tapping does NOT pause auto-scroll by default (user can press Pause)
+      }
+    };
+
+    container.addEventListener("touchstart", onTouchStart, { passive: true });
+    container.addEventListener("touchend", onTouchEnd, { passive: true });
 
     return () => {
-      document.removeEventListener("click", handler);
-      document.removeEventListener("touchstart", handler);
-      document.removeEventListener("pointerdown", handler);
+      container.removeEventListener("touchstart", onTouchStart);
+      container.removeEventListener("touchend", onTouchEnd);
     };
-  }, []);
+  }, [touchThreshold.maxMove, touchThreshold.maxTime]);
 
+  // initial scroll into view
   useEffect(() => {
     if (!pendingInitialScroll.current) return;
     const chapterNodes = pageRefs.current[initialChapterNumber];
     const targetNode =
       chapterNodes?.[Math.max(0, initialPageNumber - 1)] ?? null;
     if (!targetNode) return;
-    // still pending; perform scroll then mark finished
     requestAnimationFrame(() => {
       try {
         targetNode.scrollIntoView({ behavior: "auto", block: "start" });
@@ -525,10 +639,7 @@ export default function ChapterReader({
         targetNode.scrollIntoView(true);
       }
       pendingInitialScroll.current = false;
-      // after scrolling, force an active calc to make sure activePage matches visual
-      requestAnimationFrame(() => {
-        updateActiveFromScroll();
-      });
+      setTimeout(() => updateActiveFromScroll(), 50);
     });
   }, [
     initialChapterNumber,
@@ -538,49 +649,58 @@ export default function ChapterReader({
     updateActiveFromScroll,
   ]);
 
+  // emit progress
   useEffect(() => {
     if (!comic?.id || !onProgress) return;
-
-    // If initial scroll hasn't been completed yet, postpone emitting progress
     if (pendingInitialScroll.current) {
       const pagesForActive = chaptersWithPages[activeChapter];
-      if (!pagesForActive || !pagesForActive.pages) {
-        // not ready yet — skip emitting
-        return;
-      }
+      if (!pagesForActive || !pagesForActive.pages) return;
     }
-
     onProgress(comic.id, activeChapter, activePage);
   }, [activeChapter, activePage, comic?.id, onProgress, chaptersWithPages]);
 
-  const sortedVisibleChapters = useMemo(
-    () =>
-      [...visibleChapters]
-        .map((number) => {
-          const chapter = findChapter(number);
-          if (!chapter) return null;
-          return chaptersWithPages[number] || chapter;
-        })
-        .filter(Boolean)
-        .sort((a, b) => {
-          const numA = toNumber(a.number ?? a.chapter_number) ?? 0;
-          const numB = toNumber(b.number ?? b.chapter_number) ?? 0;
-          return numA - numB;
-        }),
-    [visibleChapters, findChapter, chaptersWithPages]
-  );
+  const sortedVisibleChapters = useMemo(() => {
+    return [...visibleChapters]
+      .map((num) => {
+        const ch = findChapter(num);
+        if (!ch) return null;
+        return chaptersWithPages[num] || ch;
+      })
+      .filter(Boolean)
+      .sort(
+        (a, b) =>
+          (toNumber(a.number ?? a.chapter_number) ?? 0) -
+          (toNumber(b.number ?? b.chapter_number) ?? 0)
+      );
+  }, [visibleChapters, findChapter, chaptersWithPages]);
 
-  // Ensure we recalc active page after new pages are rendered
+  // attach nodes for observer after render
   useEffect(() => {
-    // run on next frame so DOM nodes exist
     requestAnimationFrame(() => {
-      updateActiveFromScroll();
+      Object.values(pageRefs.current).forEach((nodes) => {
+        if (!nodes) return;
+        nodes.forEach((n) => {
+          if (n) pendingObserveQueue.current.push(n);
+        });
+      });
     });
-  }, [chaptersWithPages, visibleChapters, updateActiveFromScroll]);
+  }, [chaptersWithPages, visibleChapters]);
+
+  // UI hide when mobile + auto-scroll OR user hid controls
+  const hideUiOnMobile = isMobile && (!controlsVisible || isAutoScrolling);
+  const containerPadding = isMobile ? "px-0 py-0" : "px-4 py-10 sm:px-8";
 
   return (
     <div className="flex flex-1 flex-col gap-4">
-      <header className="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-black/5 px-4 py-3 text-sm font-medium text-zinc-700 dark:bg-white/10 dark:text-zinc-200">
+      {/* Header */}
+      <header
+        className={`flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-black/5 px-4 py-3 text-sm font-medium text-zinc-700 dark:bg-white/10 dark:text-zinc-200 transition-all duration-200 ${
+          hideUiOnMobile
+            ? "opacity-0 pointer-events-none h-0 overflow-hidden"
+            : "opacity-100"
+        }`}
+        aria-hidden={hideUiOnMobile}
+      >
         <div className="flex flex-col">
           <span className="uppercase tracking-wide text-xs text-zinc-500 dark:text-zinc-400">
             Sedang dibaca
@@ -599,12 +719,15 @@ export default function ChapterReader({
         </div>
       </header>
 
+      {/* Reader container */}
       <div
         ref={containerRef}
         onScroll={handleScroll}
-        className="relative flex-1 overflow-y-auto rounded-3xl border border-zinc-200 bg-white shadow-inner dark:border-zinc-800 dark:bg-zinc-950"
+        className={`relative flex-1 overflow-y-auto overflow-x-hidden ${
+          hideUiOnMobile ? "h-screen" : ""
+        } rounded-3xl border border-zinc-200 bg-white shadow-inner dark:border-zinc-800 dark:bg-zinc-950`}
       >
-        <div className="flex flex-col gap-12 px-4 py-10 sm:px-8">
+        <div className={`flex flex-col gap-12 ${containerPadding}`}>
           {sortedVisibleChapters.map((chapter) => {
             const normalizedNumber =
               toNumber(chapter.number ?? chapter.chapter_number) ?? 0;
@@ -614,7 +737,11 @@ export default function ChapterReader({
                 data-chapter={normalizedNumber}
                 className="space-y-6"
               >
-                <div className="sticky top-4 z-20 flex items-center justify-between rounded-full bg-white/90 px-4 py-2 text-sm font-semibold text-zinc-700 shadow dark:bg-zinc-900/90 dark:text-zinc-200">
+                <div
+                  className={`sticky top-4 z-20 flex items-center justify-between rounded-full bg-white/90 px-4 py-2 text-sm font-semibold text-zinc-700 shadow dark:bg-zinc-900/90 dark:text-zinc-200 ${
+                    hideUiOnMobile ? "opacity-0 pointer-events-none" : ""
+                  }`}
+                >
                   <span>
                     Chapter {chapter.number || chapter.chapter_number}
                   </span>
@@ -626,41 +753,77 @@ export default function ChapterReader({
                       : "Memuat halaman..."}
                   </span>
                 </div>
-                <div className="flex flex-col">
+
+                <div
+                  className={`flex flex-col ${
+                    isMobile ? "items-stretch" : "items-center"
+                  }`}
+                >
                   {loadingChapters.has(normalizedNumber) ? (
                     <div className="py-12 text-center text-sm text-zinc-500 dark:text-zinc-400">
                       Memuat halaman chapter...
                     </div>
                   ) : chapter.pages && chapter.pages.length > 0 ? (
-                    chapter.pages.map((pageUrl, index) => (
-                      <figure
-                        key={pageUrl}
-                        ref={(node) => {
-                          if (!pageRefs.current[normalizedNumber]) {
-                            pageRefs.current[normalizedNumber] = [];
-                          }
-                          if (node) {
-                            pageRefs.current[normalizedNumber][index] = node;
-                          }
-                        }}
-                        className="overflow-hidden dark:bg-zinc-900"
-                        data-chapter={normalizedNumber}
-                        data-page={index + 1}
-                      >
-                        <Image
-                          src={pageUrl}
-                          alt={`Halaman ${index + 1} Chapter ${
-                            chapter.number || chapter.chapter_number
-                          }`}
-                          width={900}
-                          height={1400}
-                          className="h-auto w-full bg-zinc-100 object-cover dark:bg-zinc-800"
-                          loading="lazy"
-                          sizes="(max-width: 768px) 90vw, 60vw"
-                          unoptimized
-                        />
-                      </figure>
-                    ))
+                    chapter.pages.map((pageUrl, index) => {
+                      const isEager = index < EAGER_PAGES;
+                      return (
+                        <figure
+                          key={pageUrl}
+                          ref={(node) => {
+                            if (!pageRefs.current[normalizedNumber])
+                              pageRefs.current[normalizedNumber] = [];
+                            if (node) {
+                              pageRefs.current[normalizedNumber][index] = node;
+                              pendingObserveQueue.current.push(node);
+                            } else if (pageRefs.current[normalizedNumber])
+                              pageRefs.current[normalizedNumber][index] =
+                                undefined;
+                          }}
+                          data-chapter={normalizedNumber}
+                          data-page={index + 1}
+                          style={{ display: "block", width: "100%" }}
+                        >
+                          {/* Full-bleed trick on mobile to avoid cropping by parent container */}
+                          <div
+                            style={{
+                              width: isMobile ? "100vw" : "100%",
+                              maxWidth: isMobile
+                                ? "100vw"
+                                : `${MAX_IMAGE_WIDTH}px`,
+                              marginLeft: isMobile ? "calc(50% - 50vw)" : "0",
+                              marginRight: isMobile ? "calc(50% - 50vw)" : "0",
+                              margin: isMobile ? "0" : "0 auto",
+                              display: "block",
+                            }}
+                          >
+                            <Image
+                              src={pageUrl}
+                              alt={`Halaman ${index + 1} Chapter ${
+                                chapter.number || chapter.chapter_number
+                              }`}
+                              width={900}
+                              height={1400}
+                              style={{
+                                width: "100%",
+                                height: "auto",
+                                objectFit: "contain",
+                                display: "block",
+                                willChange: "transform",
+                              }}
+                              className="bg-zinc-100 dark:bg-zinc-800"
+                              loading={isEager ? "eager" : "lazy"}
+                              sizes={
+                                isMobile
+                                  ? "100vw"
+                                  : "(max-width: 768px) 100vw, 80vw"
+                              }
+                              priority={isEager}
+                              unoptimized
+                            />
+                          </div>
+                        </figure>
+                      );
+                    })
                   ) : (
                     <div className="py-12 text-center text-sm text-zinc-500 dark:text-zinc-400">
                       Tidak ada halaman tersedia
@@ -673,7 +836,13 @@ export default function ChapterReader({
         </div>
       </div>
 
-      <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-3">
+      {/* Floating controls */}
+      <div
+        className={`fixed bottom-6 right-6 z-50 flex flex-col items-end gap-3 transition-all duration-200 ${
+          hideUiOnMobile ? "opacity-0 pointer-events-none" : "opacity-100"
+        }`}
+        aria-hidden={hideUiOnMobile}
+      >
         {controlsVisible && (
           <div
             ref={controlsWrapperRef}
@@ -682,44 +851,60 @@ export default function ChapterReader({
             className="flex flex-col items-end gap-3"
           >
             {showSpeedControl && (
-              <div className="flex items-center gap-3 rounded-full bg-white/95 px-4 py-2.5 shadow-lg backdrop-blur-sm dark:bg-zinc-900/95 border border-zinc-200 dark:border-zinc-800">
-                <label className="text-xs font-medium text-zinc-700 dark:text-zinc-300 whitespace-nowrap">
-                  Kecepatan:
-                </label>
-                <input
-                  type="range"
-                  min="0.5"
-                  max="10"
-                  step="0.5"
-                  value={scrollSpeed}
-                  onClick={(e) => e.stopPropagation()}
-                  onTouchStart={(e) => e.stopPropagation()}
-                  onChange={(e) => setScrollSpeed(parseFloat(e.target.value))}
-                  className="h-2 w-24 cursor-pointer appearance-none rounded-full bg-zinc-300 dark:bg-zinc-700"
-                  style={{
-                    background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${
-                      ((scrollSpeed - 0.5) / 10) * 100
-                    }%, #d1d5db ${
-                      ((scrollSpeed - 0.5) / 4.5) * 100
-                    }%, #d1d5db 100%)`,
-                  }}
-                />
-                <span className="min-w-10 text-xs font-semibold text-zinc-700 dark:text-zinc-300 text-center">
-                  {scrollSpeed.toFixed(1)}x
-                </span>
-                {!isAutoScrolling && (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setShowSpeedControl(false);
+              <div className="flex flex-col gap-2 rounded-full bg-white/95 px-4 py-3 shadow-lg backdrop-blur-sm dark:bg-zinc-900/95 border border-zinc-200 dark:border-zinc-800">
+                <div className="flex items-center gap-3">
+                  <label className="text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                    Kecepatan:
+                  </label>
+                  <input
+                    type="range"
+                    min="0.5"
+                    max="10"
+                    step="0.5"
+                    value={scrollSpeed}
+                    onChange={(e) => setScrollSpeed(parseFloat(e.target.value))}
+                    className="h-2 w-40 cursor-pointer appearance-none rounded-full bg-zinc-300 dark:bg-zinc-700"
+                    style={{
+                      background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${
+                        ((scrollSpeed - 0.5) / 10) * 100
+                      }%, #d1d5db ${
+                        ((scrollSpeed - 0.5) / 4.5) * 100
+                      }%, #d1d5db 100%)`,
                     }}
-                    className="ml-1 text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
-                    title="Tutup"
+                  />
+                  <span className="min-w-10 text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+                    {scrollSpeed.toFixed(1)}x
+                  </span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <label className="text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                    FPS:
+                  </label>
+                  <select
+                    value={fpsLimit}
+                    onChange={(e) => setFpsLimit(Number(e.target.value))}
+                    className="text-xs rounded-md px-2 py-1 border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900"
                   >
-                    ✕
-                  </button>
-                )}
+                    <option value={60}>60</option>
+                    <option value={45}>45</option>
+                    <option value={30}>30</option>
+                  </select>
+                  <div className="ml-auto">
+                    {!isAutoScrolling && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setShowSpeedControl(false);
+                        }}
+                        className="ml-1 text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+                        title="Tutup"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                </div>
               </div>
             )}
 
@@ -737,6 +922,7 @@ export default function ChapterReader({
                   ⚙️
                 </button>
               )}
+
               <button
                 type="button"
                 onClick={(e) => {

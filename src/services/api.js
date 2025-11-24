@@ -1,3 +1,7 @@
+// Normalize API base URL from env: trim whitespace and remove trailing slashes
+const rawApiBase = process.env.NEXT_PUBLIC_API_BASE_URL || "";
+const API_BASE_URL = rawApiBase.trim().replace(/\/+$|\s+/g, "");
+
 /**
  * Fetch latest updated comics (Terupdate)
  * @param {number} page - Page number (default: 1)
@@ -5,7 +9,7 @@
  * @returns {Promise<Array>} Array of mapped comics
  */
 export async function getLatestUpdatedComics(page = 1, pageSize = 3) {
-  const url = `https://api.shngm.io/v1/manga/list?type=project&page=${page}&page_size=${pageSize}&is_update=true&sort=latest&sort_order=desc`;
+  const url = `${API_BASE_URL}/manga/list?type=project&page=${page}&page_size=${pageSize}&is_update=true&sort=latest&sort_order=desc`;
   try {
     const response = await fetch(url);
     if (!response.ok) {
@@ -21,9 +25,6 @@ export async function getLatestUpdatedComics(page = 1, pageSize = 3) {
     return [];
   }
 }
-// Normalize API base URL from env: trim whitespace and remove trailing slashes
-const rawApiBase = process.env.NEXT_PUBLIC_API_BASE_URL || "";
-const API_BASE_URL = rawApiBase.trim().replace(/\/+$|\s+/g, "");
 
 /**
  * Search comics by query

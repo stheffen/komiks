@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import ComicCard from "@/components/ComicCard";
 import ComicDetailDialog from "@/components/ComicDetailDialog";
@@ -25,21 +25,6 @@ export default function JelajahiPage() {
   const [latestComics, setLatestComics] = useState([]);
   const [latestLoading, setLatestLoading] = useState(true);
   const scrollContainerRef = useRef(null);
-  // Fetch latest updated comics (Terupdate)
-  useEffect(() => {
-    setLatestLoading(true);
-    getLatestUpdatedComics(1, 12)
-      .then((results) => {
-        setLatestComics(results);
-      })
-      .catch((error) => {
-        console.error("Error loading latest updated comics:", error);
-        setLatestComics([]);
-      })
-      .finally(() => {
-        setLatestLoading(false);
-      });
-  }, []);
 
   // Load initial comics
   useEffect(() => {
@@ -84,43 +69,8 @@ export default function JelajahiPage() {
 
   // Komik Terupdate: search and chunked scroll
   const [latestFiltered, setLatestFiltered] = useState([]);
-  const [latestChunkCount, setLatestChunkCount] = useState(1);
   const latestScrollRef = useRef(null);
-  const LATEST_PAGE_SIZE = 8;
-
-  useEffect(() => {
-    if (!query) {
-      setLatestFiltered(latestComics);
-    } else {
-      const q = query.toLowerCase();
-      setLatestFiltered(
-        latestComics.filter(
-          (comic) =>
-            comic.title.toLowerCase().includes(q) ||
-            comic.alternativeTitle?.toLowerCase().includes(q) ||
-            comic.genres.some((g) => g.toLowerCase().includes(q))
-        )
-      );
-    }
-    setLatestChunkCount(1);
-    if (latestScrollRef.current) latestScrollRef.current.scrollTo({ top: 0 });
-  }, [query, latestComics]);
-
-  const visibleLatestComics = latestFiltered.slice(
-    0,
-    latestChunkCount * LATEST_PAGE_SIZE
-  );
-  const hasMoreLatest = visibleLatestComics.length < latestFiltered.length;
-
-  const loadMoreLatest = () => {
-    setLatestChunkCount((count) => {
-      const next = count + 1;
-      if (next * LATEST_PAGE_SIZE >= latestFiltered.length) {
-        return Math.ceil(latestFiltered.length / LATEST_PAGE_SIZE);
-      }
-      return next;
-    });
-  };
+  const loaderRef = useRef(null);
 
   // Komik Terupdate: infinite scroll
   const [latestPage, setLatestPage] = useState(1);
@@ -128,13 +78,13 @@ export default function JelajahiPage() {
   const [latestLoadingMore, setLatestLoadingMore] = useState(false);
 
   // Initial fetch (already exists)
-  useEffect(() => {
+  const fetchInitialLatest = () => {
     setLatestLoading(true);
     getLatestUpdatedComics(1, 12)
       .then((results) => {
         setLatestComics(results);
         setLatestPage(1);
-        setLatestHasMore(results.length === 12);
+        setLatestHasMore(results.length > 0);
       })
       .catch((error) => {
         console.error("Error loading latest updated comics:", error);
@@ -144,19 +94,19 @@ export default function JelajahiPage() {
       .finally(() => {
         setLatestLoading(false);
       });
+  };
+
+  useEffect(() => {
+    fetchInitialLatest();
   }, []);
 
   // Load more when scrolled to bottom
-  const loadMoreLatestFromApi = async () => {
-    if (latestLoadingMore || !latestHasMore) return;
+  const loadMoreLatestFromApi = useCallback(async () => {
+    if (latestLoadingMore || !latestHasMore || query) return;
     const nextPage = latestPage + 1;
-    console.debug(`[Komik Terupdate] Fetching page ${nextPage} from API...`);
     setLatestLoadingMore(true);
     try {
       const more = await getLatestUpdatedComics(nextPage, 12);
-      console.debug(
-        `[Komik Terupdate] API returned ${more.length} comics for page ${nextPage}`
-      );
       if (more.length > 0) {
         setLatestComics((prev) => [...prev, ...more]);
         setLatestPage(nextPage);
@@ -169,63 +119,57 @@ export default function JelajahiPage() {
     } finally {
       setLatestLoadingMore(false);
     }
-  };
+  }, [latestPage, latestHasMore, latestLoadingMore, query]);
 
-  // Improved infinite scroll for Komik Terupdate
+  // Filter latest comics based on query
   useEffect(() => {
-    if (!latestScrollRef.current) return;
-    const el = latestScrollRef.current;
-    let ticking = false;
-    const onScroll = () => {
-      if (!ticking) {
-        window.requestAnimationFrame(() => {
-          const atBottom =
-            el.scrollHeight - el.scrollTop - el.clientHeight <= 120;
-          if (atBottom) {
-            if (hasMoreLatest) {
-              loadMoreLatest();
-            } else if (latestHasMore && !latestLoadingMore) {
-              loadMoreLatestFromApi();
-            }
-          }
-          ticking = false;
-        });
-        ticking = true;
-      }
-    };
-    el.addEventListener("scroll", onScroll);
-    return () => el.removeEventListener("scroll", onScroll);
-  }, [
-    hasMoreLatest,
-    latestHasMore,
-    latestLoadingMore,
-    visibleLatestComics.length,
-    latestFiltered.length,
-  ]);
-
-  const handleLatestScroll = (event) => {
-    const el = event.currentTarget;
-    if (
-      el.scrollHeight - el.scrollTop - el.clientHeight <= 120 &&
-      hasMoreLatest
-    ) {
-      loadMoreLatest();
-      // If chunked comics are exhausted, fetch more from API
-      if (!hasMoreLatest && latestHasMore && !latestLoadingMore) {
-        loadMoreLatestFromApi();
-      }
+    if (!query) {
+      // Saat query kosong, sinkronkan filtered dengan state utama
+      setLatestFiltered(latestComics);
+    } else {
+      const q = query.toLowerCase();
+      setLatestFiltered(
+        latestComics.filter(
+          (comic) =>
+            comic.title.toLowerCase().includes(q) ||
+            comic.alternativeTitle?.toLowerCase().includes(q) ||
+            comic.genres.some((g) => g.toLowerCase().includes(q))
+        )
+      );
+      // Saat mencari, infinite scroll dinonaktifkan, jadi tidak perlu khawatir tentang penambahan data
     }
-  };
+  }, [query, latestComics]);
 
-  const handleLatestWheel = (event) => {
-    if (
-      event.deltaY < 0 &&
-      latestScrollRef.current?.scrollTop <= 0 &&
-      hasMoreLatest
-    ) {
-      loadMoreLatest();
+  // Scroll to top when query changes
+  useEffect(() => {
+    if (latestScrollRef.current) {
+      latestScrollRef.current.scrollTo({ top: 0 });
     }
-  };
+  }, [query]);
+
+  // Infinite scroll with IntersectionObserver
+  useEffect(() => {
+    const loader = loaderRef.current;
+    const scrollContainer = latestScrollRef.current;
+    if (!loader || !scrollContainer) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        // Trigger when the loader element is intersecting with the scroll container
+        if (entries[0].isIntersecting) {
+          loadMoreLatestFromApi();
+        }
+      },
+      {
+        root: scrollContainer, // The scrollable parent
+        rootMargin: "0px 0px 200px 0px", // Start loading 200px before the end
+        threshold: 0, // Trigger as soon as any part of the loader is visible
+      }
+    );
+
+    observer.observe(loader);
+    return () => observer.disconnect(); // Clean up the observer
+  }, [loadMoreLatestFromApi]);
 
   const visibleComics = filteredComics.slice(0, chunkCount * PAGE_SIZE);
   const hasMore = visibleComics.length < filteredComics.length;
@@ -293,9 +237,6 @@ export default function JelajahiPage() {
             placeholder="Cari komik favoritmu..."
             className="w-full rounded-full border border-zinc-300 bg-white px-4 py-3 text-sm focus:border-zinc-500 focus:outline-none focus:ring-2 focus:ring-zinc-400 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:focus:border-zinc-500"
           />
-          <span className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-            {filteredComics.length} komik ditemukan
-          </span>
         </div>
       </header>
 
@@ -315,12 +256,10 @@ export default function JelajahiPage() {
         ) : (
           <div
             ref={latestScrollRef}
-            onScroll={handleLatestScroll}
-            onWheel={handleLatestWheel}
             className="max-h-[50vh] overflow-y-auto rounded-3xl border border-emerald-200 bg-white/70 p-6 shadow-inner dark:border-emerald-800 dark:bg-zinc-900/60"
           >
             <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-              {visibleLatestComics.map((comic) => (
+              {latestFiltered.map((comic) => (
                 <ComicCard
                   key={comic.id}
                   comic={comic}
@@ -332,11 +271,12 @@ export default function JelajahiPage() {
                 />
               ))}
             </div>
-            {(hasMoreLatest || latestHasMore || latestLoadingMore) && (
+            <div ref={loaderRef} />
+            {(latestHasMore || latestLoadingMore) && !query && (
               <div className="mt-6 text-center text-xs font-semibold uppercase tracking-wide text-emerald-500 dark:text-emerald-400">
                 {latestLoadingMore
                   ? "Memuat komik terupdate berikutnya..."
-                  : "Scroll ke atas atau bawah untuk memuat komik terupdate lainnya..."}
+                  : "Scroll ke bawah untuk memuat lebih banyak..."}
               </div>
             )}
           </div>
