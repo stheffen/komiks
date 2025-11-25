@@ -266,6 +266,46 @@ export default function JelajahiPage() {
         </div>
       </header>
 
+      {/* Search Results Section */}
+      <section>
+        <div
+          ref={scrollContainerRef}
+          onScroll={handleScroll}
+          className="max-h-[70vh] overflow-y-auto rounded-3xl border border-zinc-200 bg-white/70 p-6 shadow-inner dark:border-zinc-800 dark:bg-zinc-900/60"
+        >
+          {comicsLoading || searchLoading ? (
+            <div className="rounded-2xl border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-600 dark:border-zinc-700 dark:text-zinc-300">
+              Memuat komik...
+            </div>
+          ) : visibleComics.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-600 dark:border-zinc-700 dark:text-zinc-300">
+              {query
+                ? "Tidak ada komik yang sesuai dengan pencarianmu."
+                : "Memuat komik..."}
+            </div>
+          ) : (
+            <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+              {visibleComics.map((comic) => (
+                <ComicCard
+                  key={comic.id}
+                  comic={comic}
+                  onPrimaryAction={setSelectedComic}
+                  primaryActionLabel="Detail"
+                  onToggleLibrary={toggleLibrary}
+                  isInLibrary={libraryIds.includes(comic.id)}
+                  showLibraryAction
+                />
+              ))}
+            </div>
+          )}
+          {hasMore && !searchLoading && (
+            <div className="mt-6 text-center text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+              Scroll ke atas atau bawah untuk memuat komik lainnya...
+            </div>
+          )}
+        </div>
+      </section>
+
       {/* Terupdate Section */}
       <section className="space-y-4">
         <h2 className="text-xl font-bold text-emerald-600 dark:text-emerald-400">
@@ -307,46 +347,6 @@ export default function JelajahiPage() {
             )}
           </div>
         )}
-      </section>
-
-      {/* Search Results Section */}
-      <section>
-        <div
-          ref={scrollContainerRef}
-          onScroll={handleScroll}
-          className="max-h-[70vh] overflow-y-auto rounded-3xl border border-zinc-200 bg-white/70 p-6 shadow-inner dark:border-zinc-800 dark:bg-zinc-900/60"
-        >
-          {comicsLoading || searchLoading ? (
-            <div className="rounded-2xl border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-600 dark:border-zinc-700 dark:text-zinc-300">
-              Memuat komik...
-            </div>
-          ) : visibleComics.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-600 dark:border-zinc-700 dark:text-zinc-300">
-              {query
-                ? "Tidak ada komik yang sesuai dengan pencarianmu."
-                : "Memuat komik..."}
-            </div>
-          ) : (
-            <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-              {visibleComics.map((comic) => (
-                <ComicCard
-                  key={comic.id}
-                  comic={comic}
-                  onPrimaryAction={setSelectedComic}
-                  primaryActionLabel="Detail"
-                  onToggleLibrary={toggleLibrary}
-                  isInLibrary={libraryIds.includes(comic.id)}
-                  showLibraryAction
-                />
-              ))}
-            </div>
-          )}
-          {hasMore && !searchLoading && (
-            <div className="mt-6 text-center text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-              Scroll ke atas atau bawah untuk memuat komik lainnya...
-            </div>
-          )}
-        </div>
       </section>
 
       <ComicDetailDialog
