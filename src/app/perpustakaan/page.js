@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import ComicCard from "@/components/ComicCard";
 import ComicDetailDialog from "@/components/ComicDetailDialog";
@@ -11,6 +11,18 @@ export default function PerpustakaanPage() {
   const { isReady, libraryComics, libraryIds, toggleLibrary, getLastProgress } =
     useComics();
   const [selectedComic, setSelectedComic] = useState(null);
+
+  const [isVisible, setIsVisible] = useState(true);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      setIsVisible(document.visibilityState === "visible");
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () =>
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, []);
 
   const orderedLibrary = useMemo(() => {
     return [...libraryComics].sort((a, b) => a.title.localeCompare(b.title));

@@ -1,20 +1,31 @@
 "use client";
 
 import Image from "next/image";
-import { useMemo } from "react";
+import { useMemo, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useComics } from "@/context/ComicsContext";
 
 export default function RiwayatPage() {
   const router = useRouter();
   const { historyEntries } = useComics();
+  const [isVisible, setIsVisible] = useState(true);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      setIsVisible(document.visibilityState === "visible");
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () =>
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, []);
 
   const orderedHistory = useMemo(() => {
     return [...historyEntries].sort(
       (a, b) =>
         new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
     );
-  }, [historyEntries]);
+  }, [historyEntries, isVisible]);
 
   const handleContinue = (entry) => {
     const params = new URLSearchParams();
@@ -60,7 +71,7 @@ export default function RiwayatPage() {
               <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
                 <div className="flex items-start gap-4">
                   <Image
-                    src={entry.comic.cover}
+                    src={entry.comic.cover || "/placeholder.svg"}
                     alt={entry.comic.title}
                     width={96}
                     height={144}

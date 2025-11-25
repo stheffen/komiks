@@ -55,63 +55,32 @@ export default function ChapterReader({
 
   // Virtual scroll position (float) & smoothing
   const virtualScrollPosRef = useRef(0);
-  // TUNED: smaller max step, slightly higher lerp for balanced smoothness & responsiveness
-  const smoothingRef = useRef({ lerpFactor: 0.22, maxStepPerFrame: 24 });
-
-  // Tap detection for container
-  const touchStartRef = useRef({ x: 0, y: 0, time: 0 });
-  const touchThreshold = { maxTime: 300, maxMove: 14 };
-  const controlsWrapperRef = useRef(null);
-
-  // Observers
-  const viewportObserverRef = useRef(null);
-  const containerObserverRef = useRef(null);
-  const pendingObserveQueue = useRef([]);
-  const lastReportedRef = useRef({
-    chapter: initialChapterNumber,
-    page: initialPageNumber,
+  const smoothingRef = useRef({
+    lerpFactor: 0.18,
+    maxStepPerFrame: 16,
+    velocity: 0,
+    damping: 0.92, // friction coefficient for smooth deceleration
   });
 
-  const chapterNumbers = useMemo(
-    () =>
-      (comic?.chapters || [])
-        .map((ch) => toNumber(ch.number ?? ch.chapter_number))
-        .filter((n) => typeof n === "number" && !Number.isNaN(n))
-        .sort((a, b) => a - b),
-    [comic?.chapters]
-  );
+  const frameAccumulatorRef = useRef(0);
+  const lastScrollDeltaRef = useRef(0); // Track velocity for adaptive smoothing
 
-  // Broadcast controlsVisible and auto-scroll state to Providers (NavigationBar)
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    try {
-      // Visible = true when controlsVisible && not auto-scrolling on mobile
-      const visibleForNav = !(isMobile && (isAutoScrolling || !controlsVisible))
-        ? true
-        : false;
-      const detail = { visible: visibleForNav, mobileOnly: true };
-      window.dispatchEvent(new CustomEvent("reader:controls", { detail }));
-    } catch (e) {
-      // ignore
+  const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+  const easeInOutQuad = (t) => (t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t);
+
+  const getAdaptiveLerpFactor = (distance, maxDistance = 200) => {
+    const normalized = Math.min(Math.abs(distance) / maxDistance, 1);
+    // Slower lerp when far, faster when close
+    return 0.12 + normalized * 0.08; // Range: 0.12 - 0.20
+  };
+
+  const handleFrameSkip = (deltaTime, expectedFrameDuration) => {
+    if (deltaTime > expectedFrameDuration * 2) {
+      // Frame skip detected - reduce movement to avoid sudden jump
+      return Math.min(deltaTime, expectedFrameDuration * 1.5);
     }
-  }, [controlsVisible, isAutoScrolling, isMobile]);
-
-  useEffect(() => {
-    fpsLimitRef.current = fpsLimit;
-  }, [fpsLimit]);
-
-  // detect mobile (touch or narrow)
-  useEffect(() => {
-    function checkMobile() {
-      const touch = typeof window !== "undefined" && "ontouchstart" in window;
-      const narrow =
-        typeof window !== "undefined" && window.innerWidth < MOBILE_BREAKPOINT;
-      setIsMobile(Boolean(touch || narrow));
-    }
-    checkMobile();
-    window.addEventListener("resize", checkMobile);
-    return () => window.removeEventListener("resize", checkMobile);
-  }, []);
+    return deltaTime;
+  };
 
   // --- scroll helpers ---
   const getRootForScroll = useCallback(() => {
@@ -238,14 +207,18 @@ export default function ChapterReader({
     setVisibleChapters((chapters) => {
       if (chapters.length === 0) return chapters;
       const currentMax = Math.max(...chapters);
-      const availableNext = chapterNumbers.find(
-        (number) => number > currentMax
+      const availableNext = comic?.chapters.find(
+        (ch) => toNumber(ch.number ?? ch.chapter_number) > currentMax
       );
       if (!availableNext) return chapters;
-      if (chapters.includes(availableNext)) return chapters;
-      return [...chapters, availableNext].sort((a, b) => a - b);
+      const nextChapterNumber = toNumber(
+        availableNext.number ?? availableNext.chapter_number
+      );
+      if (!nextChapterNumber) return chapters;
+      if (chapters.includes(nextChapterNumber)) return chapters;
+      return [...chapters, nextChapterNumber].sort((a, b) => a - b);
     });
-  }, [chapterNumbers]);
+  }, [comic?.chapters]);
 
   // --- IntersectionObserver for active page ---
   const intersectionCallback = useCallback((entries) => {
@@ -270,6 +243,14 @@ export default function ChapterReader({
       }
     }
   }, []);
+
+  const viewportObserverRef = useRef(null);
+  const containerObserverRef = useRef(null);
+  const lastReportedRef = useRef({ chapter: null, page: null });
+  const pendingObserveQueue = useRef([]);
+  const touchStartRef = useRef(null);
+  const touchThreshold = { maxTime: 300, maxMove: 10 };
+  const controlsWrapperRef = useRef(null);
 
   useEffect(() => {
     if (!viewportObserverRef.current) {
@@ -430,7 +411,7 @@ export default function ChapterReader({
     return () => window.removeEventListener("scroll", onWindow);
   }, [handleScroll]);
 
-  // ---------- Smooth auto-scroll ----------
+  // ---------- Smooth auto-scroll with advanced smoothing ----------
   useEffect(() => {
     const root = getRootForScroll();
     if (!root) {
@@ -443,11 +424,15 @@ export default function ChapterReader({
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
       }
+      frameAccumulatorRef.current = 0;
+      smoothingRef.current.velocity = 0;
       return;
     }
 
     virtualScrollPosRef.current = getScrollTop(root);
     lastFrameTimeRef.current = performance.now();
+    frameAccumulatorRef.current = 0;
+    smoothingRef.current.velocity = 0;
     isAutoScrollingRef.current = true;
     isUserScrollingRef.current = false;
 
@@ -470,6 +455,8 @@ export default function ChapterReader({
           cancelAnimationFrame(rafRef.current);
           rafRef.current = null;
         }
+        frameAccumulatorRef.current = 0;
+        smoothingRef.current.velocity = 0;
         isAutoScrollingRef.current = false;
         setIsAutoScrolling(false);
         return;
@@ -477,39 +464,61 @@ export default function ChapterReader({
 
       const frameDuration = 1000 / (fpsLimitRef.current || 60);
       const since = time - lastFrameTimeRef.current;
-      if (since < 0) lastFrameTimeRef.current = time;
 
-      if (since >= frameDuration) {
-        const moveAmount = (scrollSpeed * since) / 16;
-        virtualScrollPosRef.current += moveAmount;
-        const domPos = getScrollTop(currentRoot);
-        const target = Math.min(
-          virtualScrollPosRef.current,
-          getMaxScroll(currentRoot)
-        );
-        const diff = target - domPos;
-        const cap = smoothingRef.current.maxStepPerFrame;
-        const clamped = Math.max(-cap, Math.min(cap, diff));
-        const lerpFactor = smoothingRef.current.lerpFactor;
-        const applied = domPos + clamped * lerpFactor;
-        const writeTo = Math.round(applied);
-
-        try {
-          if (
-            currentRoot === window ||
-            currentRoot === document.scrollingElement ||
-            currentRoot === document.documentElement
-          ) {
-            // use scrollTo on window for consistent behavior
-            window.scrollTo({ top: writeTo });
-          } else {
-            currentRoot.scrollTo({ top: writeTo });
-          }
-        } catch (err) {
-          setScrollTop(currentRoot, writeTo);
-        }
-
+      if (since < 0) {
         lastFrameTimeRef.current = time;
+      } else {
+        frameAccumulatorRef.current += since;
+
+        if (frameAccumulatorRef.current >= frameDuration) {
+          const adjustedDelta = handleFrameSkip(
+            frameAccumulatorRef.current,
+            frameDuration
+          );
+
+          const moveAmount = (scrollSpeed * adjustedDelta) / 16;
+          virtualScrollPosRef.current += moveAmount;
+
+          const domPos = getScrollTop(currentRoot);
+          const maxScrollPos = getMaxScroll(currentRoot);
+          const target = Math.min(virtualScrollPosRef.current, maxScrollPos);
+          const diff = target - domPos;
+
+          const adaptiveLerp = getAdaptiveLerpFactor(diff);
+
+          let finalLerp = adaptiveLerp;
+          const proximityThreshold = 5;
+          if (Math.abs(diff) < proximityThreshold && Math.abs(diff) > 0.5) {
+            // Apply dampening when very close to target
+            finalLerp = adaptiveLerp * 0.6;
+            smoothingRef.current.velocity *= smoothingRef.current.damping;
+          }
+
+          const cap = smoothingRef.current.maxStepPerFrame;
+          const clamped = Math.max(-cap, Math.min(cap, diff));
+          const applied = domPos + clamped * finalLerp;
+          const writeTo = Math.round(applied);
+
+          lastScrollDeltaRef.current = writeTo - domPos;
+          smoothingRef.current.velocity = lastScrollDeltaRef.current;
+
+          try {
+            if (
+              currentRoot === window ||
+              currentRoot === document.scrollingElement ||
+              currentRoot === document.documentElement
+            ) {
+              window.scrollTo({ top: writeTo });
+            } else {
+              currentRoot.scrollTo({ top: writeTo });
+            }
+          } catch (err) {
+            setScrollTop(currentRoot, writeTo);
+          }
+
+          frameAccumulatorRef.current -= frameDuration;
+          lastFrameTimeRef.current = time;
+        }
       }
 
       rafRef.current = requestAnimationFrame(step);
@@ -523,7 +532,9 @@ export default function ChapterReader({
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
       }
-      if (!isMobile) setControlsVisible(true); // desktop: restore UI; mobile: keep hidden until tap
+      frameAccumulatorRef.current = 0;
+      smoothingRef.current.velocity = 0;
+      if (!isMobile) setControlsVisible(true);
     };
   }, [
     isAutoScrolling,
@@ -797,7 +808,7 @@ export default function ChapterReader({
                             }}
                           >
                             <Image
-                              src={pageUrl}
+                              src={pageUrl || "/placeholder.svg"}
                               alt={`Halaman ${index + 1} Chapter ${
                                 chapter.number || chapter.chapter_number
                               }`}
@@ -862,7 +873,9 @@ export default function ChapterReader({
                     max="10"
                     step="0.5"
                     value={scrollSpeed}
-                    onChange={(e) => setScrollSpeed(parseFloat(e.target.value))}
+                    onChange={(e) =>
+                      setScrollSpeed(Number.parseFloat(e.target.value))
+                    }
                     className="h-2 w-40 cursor-pointer appearance-none rounded-full bg-zinc-300 dark:bg-zinc-700"
                     style={{
                       background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${

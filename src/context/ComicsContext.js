@@ -57,6 +57,9 @@ function persistMergedState(nextState) {
     }
     const merged = { ...base, ...nextState };
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+    window.dispatchEvent(
+      new CustomEvent("komik:history-updated", { detail: merged })
+    );
   } catch (e) {
     // ignore
   }
@@ -161,7 +164,6 @@ export function ComicsProvider({ children }) {
   const hasHydrated = useRef(false);
   const lastRecordedRef = useRef(null);
 
-  // Initialize comics cache
   useEffect(() => {
     async function loadComics() {
       try {
@@ -177,7 +179,6 @@ export function ComicsProvider({ children }) {
     loadComics();
   }, []);
 
-  // Initial hydration: prefer komik:lastProgress and persist immediately
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (hasHydrated.current) return;
@@ -205,22 +206,7 @@ export function ComicsProvider({ children }) {
                 )
               : [];
             parsed = { ...parsed, history: [normalizedTop, ...rest] };
-            console.debug(
-              "[ComicsContext] Initial hydrate: taking lastProgress as history[0]:",
-              normalizedTop
-            );
-            // Immediately persist the merged state to localStorage so history is updated
-            try {
-              window.localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
-              console.debug(
-                "[ComicsContext] Initial hydrate: persisted merged history to localStorage"
-              );
-            } catch (e) {
-              console.warn(
-                "Failed to persist merged history during hydrate:",
-                e
-              );
-            }
+            window.localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
           }
         }
       } catch (e) {
@@ -233,14 +219,9 @@ export function ComicsProvider({ children }) {
     } finally {
       hasHydrated.current = true;
       setIsReady(true);
-      console.debug(
-        "[ComicsContext] Hydration complete - isReady=true, history entries:",
-        parsed?.history?.length || 0
-      );
     }
   }, []);
 
-  // Listen for reader merge events; prefer event.detail.merged when present
   useEffect(() => {
     if (typeof window === "undefined") return;
     const handler = (ev) => {
@@ -254,7 +235,6 @@ export function ComicsProvider({ children }) {
           parsed = JSON.parse(raw) || {};
         }
 
-        // ALWAYS prefer komik:lastProgress as top history (strongest guarantee of recency)
         try {
           const lpRaw = window.localStorage.getItem("komik:lastProgress");
           if (lpRaw) {
@@ -272,10 +252,6 @@ export function ComicsProvider({ children }) {
                   )
                 : [];
               parsed = { ...parsed, history: [normalizedTop, ...rest] };
-              console.debug(
-                "[ComicsContext] Event: forcing lastProgress as top history:",
-                normalizedTop
-              );
             }
           }
         } catch (e) {
@@ -283,14 +259,12 @@ export function ComicsProvider({ children }) {
         }
 
         if (!parsed) return;
-        // apply and persist
         if (ev && ev.detail && ev.detail.merged) {
           dispatch({ type: "HYDRATE_PERSIST", payload: parsed });
         } else {
           dispatch({ type: "HYDRATE", payload: parsed });
         }
 
-        // ensure in-memory reducer has top entry (force RECORD_HISTORY)
         try {
           const top = Array.isArray(parsed.history) ? parsed.history[0] : null;
           if (top && top.comicId) {
@@ -316,7 +290,6 @@ export function ComicsProvider({ children }) {
       window.removeEventListener("komik:localstate-updated", handler);
   }, []);
 
-  // persist state changes after hydration
   useEffect(() => {
     if (!hasHydrated.current) return;
     try {
@@ -326,55 +299,42 @@ export function ComicsProvider({ children }) {
     }
   }, [state]);
 
-  // After initial hydrate, ensure in-memory state also reflects komik:lastProgress
-  useEffect(
-    () => {
-      if (typeof window === "undefined") return;
-      if (!hasHydrated.current) return;
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!hasHydrated.current) return;
 
-      try {
-        const lpRaw = window.localStorage.getItem("komik:lastProgress");
-        if (lpRaw) {
-          const lp = JSON.parse(lpRaw);
-          if (lp && lp.comicId) {
-            const normalizedTop = {
-              comicId: String(lp.comicId),
-              chapterNumber: lp.chapterNumber ?? lp.chapter ?? null,
-              pageNumber: lp.pageNumber ?? lp.page ?? lp.pageNum ?? 1,
-              updatedAt: lp.updatedAt || new Date().toISOString(),
-            };
-            // Force the reducer to record this as the top-most history entry
-            dispatch({
-              type: "RECORD_HISTORY",
-              payload: {
-                comicId: normalizedTop.comicId,
-                chapterNumber: normalizedTop.chapterNumber,
-                pageNumber: normalizedTop.pageNumber,
-              },
-            });
-            console.debug(
-              "[ComicsContext] Post-hydrate: forced in-memory RECORD_HISTORY from komik:lastProgress",
-              normalizedTop
-            );
-          }
+    try {
+      const lpRaw = window.localStorage.getItem("komik:lastProgress");
+      if (lpRaw) {
+        const lp = JSON.parse(lpRaw);
+        if (lp && lp.comicId) {
+          const normalizedTop = {
+            comicId: String(lp.comicId),
+            chapterNumber: lp.chapterNumber ?? lp.chapter ?? null,
+            pageNumber: lp.pageNumber ?? lp.page ?? lp.pageNum ?? 1,
+            updatedAt: lp.updatedAt || new Date().toISOString(),
+          };
+          dispatch({
+            type: "RECORD_HISTORY",
+            payload: {
+              comicId: normalizedTop.comicId,
+              chapterNumber: normalizedTop.chapterNumber,
+              pageNumber: normalizedTop.pageNumber,
+            },
+          });
         }
-      } catch (e) {
-        // ignore parse errors
       }
-    },
-    [
-      /* run once after hydrate completion */
-    ]
-  );
+    } catch (e) {
+      // ignore parse errors
+    }
+  }, []);
 
-  // Listen for cross-tab localStorage changes to lastProgress or the main storage
   useEffect(() => {
     if (typeof window === "undefined") return;
     const storageHandler = (ev) => {
       try {
         if (!ev) return;
         if (ev.key === "komik:lastProgress" || ev.key === STORAGE_KEY) {
-          // Prefer lastProgress as authoritative
           const lpRaw = window.localStorage.getItem("komik:lastProgress");
           if (lpRaw) {
             const lp = JSON.parse(lpRaw);
@@ -385,7 +345,6 @@ export function ComicsProvider({ children }) {
                 pageNumber: lp.pageNumber ?? lp.page ?? lp.pageNum ?? 1,
                 updatedAt: lp.updatedAt || new Date().toISOString(),
               };
-              // Persist merged state and update in-memory reducer
               try {
                 const raw = window.localStorage.getItem(STORAGE_KEY);
                 const parsed = raw ? JSON.parse(raw) || {} : {};
@@ -400,7 +359,6 @@ export function ComicsProvider({ children }) {
                   JSON.stringify(merged)
                 );
                 dispatch({ type: "HYDRATE_PERSIST", payload: merged });
-                // ensure in-memory reducer top entry
                 dispatch({
                   type: "RECORD_HISTORY",
                   payload: {
@@ -409,10 +367,6 @@ export function ComicsProvider({ children }) {
                     pageNumber: normalizedTop.pageNumber,
                   },
                 });
-                console.debug(
-                  "[ComicsContext] storage event: merged komik:lastProgress into state",
-                  normalizedTop
-                );
               } catch (e) {
                 console.warn(
                   "Failed to merge lastProgress from storage event",
@@ -504,23 +458,12 @@ export function ComicsProvider({ children }) {
   useEffect(() => {
     let mounted = true;
     async function loadHistoryComics() {
-      console.debug(
-        "[ComicsContext] loadHistoryComics: loading comic data for",
-        state.history.length,
-        "entries"
-      );
       const loaded = await Promise.all(
         state.history.map(async (entry) => {
           try {
             if (!entry || !entry.comicId) return null;
             const comic = await getComicById(entry.comicId);
-            if (!comic) {
-              console.debug(
-                "[ComicsContext] Failed to resolve comic for entry:",
-                entry
-              );
-              return null;
-            }
+            if (!comic) return null;
             return { ...entry, comic };
           } catch (e) {
             console.warn("[ComicsContext] Error loading history comic:", e);
@@ -530,11 +473,6 @@ export function ComicsProvider({ children }) {
       );
       if (!mounted) return;
       const filtered = loaded.filter(Boolean);
-      console.debug(
-        "[ComicsContext] loadHistoryComics complete:",
-        filtered.length,
-        "entries loaded"
-      );
       setHistoryComics(filtered);
     }
     if (state.history.length > 0) loadHistoryComics();
@@ -549,7 +487,6 @@ export function ComicsProvider({ children }) {
     [state.history]
   );
 
-  // Poll komik:lastProgress every second and force sync if changed
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (!hasHydrated.current || !isReady) return;
@@ -570,7 +507,6 @@ export function ComicsProvider({ children }) {
               pageNumber: lp.pageNumber ?? lp.page ?? lp.pageNum ?? 1,
               updatedAt: lp.updatedAt || new Date().toISOString(),
             };
-            // Merge into komik-reader-state
             const raw = window.localStorage.getItem(STORAGE_KEY);
             const parsed = raw ? JSON.parse(raw) || {} : {};
             const rest = Array.isArray(parsed.history)
@@ -580,29 +516,15 @@ export function ComicsProvider({ children }) {
               : [];
             const merged = { ...parsed, history: [normalizedTop, ...rest] };
             window.localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
-            // Dispatch HYDRATE_PERSIST and RECORD_HISTORY
             dispatch({ type: "HYDRATE_PERSIST", payload: merged });
-            dispatch({
-              type: "RECORD_HISTORY",
-              payload: {
-                comicId: normalizedTop.comicId,
-                chapterNumber: normalizedTop.chapterNumber,
-                pageNumber: normalizedTop.pageNumber,
-              },
-            });
-            console.debug(
-              "[ComicsContext] Poll: forced komik:lastProgress into komik-reader-state and history",
-              normalizedTop
-            );
           }
         }
       } catch (e) {
-        // ignore parse errors
+        console.warn("Failed to sync lastProgress", e);
       }
     };
 
-    timer = setInterval(syncLastProgress, 1000);
-    // Initial sync
+    timer = setInterval(syncLastProgress, 500);
     syncLastProgress();
 
     return () => {
@@ -650,7 +572,8 @@ export function ComicsProvider({ children }) {
 
 export function useComics() {
   const context = useContext(ComicsContext);
-  if (!context)
-    throw new Error("useComics harus digunakan di dalam ComicsProvider");
+  if (context === undefined) {
+    throw new Error("useComics must be used within ComicsProvider");
+  }
   return context;
 }
