@@ -3,11 +3,18 @@
 import Image from "next/image";
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { getChapterWithPages } from "@/data/comics";
+import {
+  animate,
+  useMotionValue,
+  useSpring,
+  useReducedMotion,
+} from "framer-motion";
 
 const BOTTOM_BUFFER = 180;
 const MAX_IMAGE_WIDTH = 900;
 const MOBILE_BREAKPOINT = 768;
 const EAGER_PAGES = 3;
+const BASE_SPEED_PX_PER_SEC = 200; // base pixels per second at scrollSpeed = 1
 
 const toNumber = (value) => {
   if (value === null || value === undefined) return null;
@@ -39,8 +46,7 @@ export default function ChapterReader({
   const [isAutoScrolling, setIsAutoScrolling] = useState(false);
   const [scrollSpeed, setScrollSpeed] = useState(1); // multiplier
   const [showSpeedControl, setShowSpeedControl] = useState(false);
-  const [fpsLimit, setFpsLimit] = useState(60);
-  const fpsLimitRef = useRef(fpsLimit);
+  const [fpsLimit, setFpsLimit] = useState(60); // kept for UI parity
 
   // Controls visibility: when hidden on mobile they should be fully invisible
   const [controlsVisible, setControlsVisible] = useState(true);
@@ -50,39 +56,24 @@ export default function ChapterReader({
   const isUserScrollingRef = useRef(false);
   const userScrollTimeoutRef = useRef(null);
   const isAutoScrollingRef = useRef(false);
-  const rafRef = useRef(null);
-  const lastFrameTimeRef = useRef(0);
 
-  // Virtual scroll position (float) & smoothing
-  const virtualScrollPosRef = useRef(0);
-  const smoothingRef = useRef({
-    lerpFactor: 0.18,
-    maxStepPerFrame: 16,
-    velocity: 0,
-    damping: 0.92, // friction coefficient for smooth deceleration
-  });
+  // Framer Motion refs/values
+  const motionPos = useMotionValue(0); // raw animated value
+  const motionSpring = useSpring(motionPos, { stiffness: 200, damping: 30 }); // smoothing spring
+  const fmAnimationRef = useRef(null); // holds current animation control (has stop)
+  const continuousLoopAbortRef = useRef(false);
+  const reducedMotion = useReducedMotion();
 
-  const frameAccumulatorRef = useRef(0);
-  const lastScrollDeltaRef = useRef(0); // Track velocity for adaptive smoothing
+  // Intersection / observation
+  const viewportObserverRef = useRef(null);
+  const containerObserverRef = useRef(null);
+  const lastReportedRef = useRef({ chapter: null, page: null });
+  const pendingObserveQueue = useRef([]);
+  const touchStartRef = useRef(null);
+  const touchThreshold = { maxTime: 300, maxMove: 10 };
+  const controlsWrapperRef = useRef(null);
 
-  const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
-  const easeInOutQuad = (t) => (t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t);
-
-  const getAdaptiveLerpFactor = (distance, maxDistance = 200) => {
-    const normalized = Math.min(Math.abs(distance) / maxDistance, 1);
-    // Slower lerp when far, faster when close
-    return 0.12 + normalized * 0.08; // Range: 0.12 - 0.20
-  };
-
-  const handleFrameSkip = (deltaTime, expectedFrameDuration) => {
-    if (deltaTime > expectedFrameDuration * 2) {
-      // Frame skip detected - reduce movement to avoid sudden jump
-      return Math.min(deltaTime, expectedFrameDuration * 1.5);
-    }
-    return deltaTime;
-  };
-
-  // --- scroll helpers ---
+  // helper: determine root (container vs window)
   const getRootForScroll = useCallback(() => {
     const c = containerRef.current;
     if (c && c.scrollHeight - c.clientHeight > 8) return c;
@@ -207,20 +198,23 @@ export default function ChapterReader({
     setVisibleChapters((chapters) => {
       if (chapters.length === 0) return chapters;
       const currentMax = Math.max(...chapters);
-      const availableNext = comic?.chapters.find(
-        (ch) => toNumber(ch.number ?? ch.chapter_number) > currentMax
-      );
-      if (!availableNext) return chapters;
-      const nextChapterNumber = toNumber(
-        availableNext.number ?? availableNext.chapter_number
-      );
+
+      // kumpulkan semua nomor chapter yang lebih besar dari currentMax
+      const candidates = (comic?.chapters || [])
+        .map((ch) => toNumber(ch.number ?? ch.chapter_number))
+        .filter((num) => num !== null && num > currentMax);
+
+      if (!candidates || candidates.length === 0) return chapters;
+
+      // ambil yang terdekat (paling kecil > currentMax)
+      const nextChapterNumber = Math.min(...candidates);
       if (!nextChapterNumber) return chapters;
       if (chapters.includes(nextChapterNumber)) return chapters;
       return [...chapters, nextChapterNumber].sort((a, b) => a - b);
     });
   }, [comic?.chapters]);
 
-  // --- IntersectionObserver for active page ---
+  // IntersectionObserver for active page
   const intersectionCallback = useCallback((entries) => {
     let best = null;
     entries.forEach((entry) => {
@@ -243,14 +237,6 @@ export default function ChapterReader({
       }
     }
   }, []);
-
-  const viewportObserverRef = useRef(null);
-  const containerObserverRef = useRef(null);
-  const lastReportedRef = useRef({ chapter: null, page: null });
-  const pendingObserveQueue = useRef([]);
-  const touchStartRef = useRef(null);
-  const touchThreshold = { maxTime: 300, maxMove: 10 };
-  const controlsWrapperRef = useRef(null);
 
   useEffect(() => {
     if (!viewportObserverRef.current) {
@@ -373,19 +359,33 @@ export default function ChapterReader({
   );
 
   // interrupt auto-scroll on user interaction (wheel/touch)
+  // We'll call stopContinuousAutoScroll() on interaction
+  const stopContinuousAutoScroll = useCallback(() => {
+    continuousLoopAbortRef.current = true;
+    if (
+      fmAnimationRef.current &&
+      typeof fmAnimationRef.current.stop === "function"
+    ) {
+      try {
+        fmAnimationRef.current.stop();
+      } catch (e) {}
+      fmAnimationRef.current = null;
+    }
+    isAutoScrollingRef.current = false;
+    setIsAutoScrolling(false);
+  }, []);
+
   useEffect(() => {
     const container = containerRef.current;
     const onWheel = () => {
       if (isAutoScrollingRef.current) {
-        isAutoScrollingRef.current = false;
-        setIsAutoScrolling(false);
+        stopContinuousAutoScroll();
         isUserScrollingRef.current = true;
       }
     };
     const onTouchStart = () => {
       if (isAutoScrollingRef.current) {
-        isAutoScrollingRef.current = false;
-        setIsAutoScrolling(false);
+        stopContinuousAutoScroll();
         isUserScrollingRef.current = true;
       }
     };
@@ -403,7 +403,7 @@ export default function ChapterReader({
       window.removeEventListener("wheel", onWheel);
       window.removeEventListener("touchstart", onTouchStart);
     };
-  }, []);
+  }, [stopContinuousAutoScroll]);
 
   useEffect(() => {
     const onWindow = (e) => handleScroll(e);
@@ -411,157 +411,237 @@ export default function ChapterReader({
     return () => window.removeEventListener("scroll", onWindow);
   }, [handleScroll]);
 
-  // ---------- Smooth auto-scroll with advanced smoothing ----------
+  // ---------- Framer Motion continuous auto-scroll ----------
+  // Keep spring -> DOM sync
   useEffect(() => {
-    const root = getRootForScroll();
-    if (!root) {
-      isAutoScrollingRef.current = false;
-      return;
-    }
-    if (!isAutoScrolling) {
-      isAutoScrollingRef.current = false;
-      if (rafRef.current) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
-      frameAccumulatorRef.current = 0;
-      smoothingRef.current.velocity = 0;
-      return;
-    }
-
-    virtualScrollPosRef.current = getScrollTop(root);
-    lastFrameTimeRef.current = performance.now();
-    frameAccumulatorRef.current = 0;
-    smoothingRef.current.velocity = 0;
-    isAutoScrollingRef.current = true;
-    isUserScrollingRef.current = false;
-
-    const maxScroll = getMaxScroll(root);
-    if (maxScroll <= 5) {
-      loadNextChapter();
-      setShowSpeedControl(true);
-      isAutoScrollingRef.current = false;
-      setIsAutoScrolling(false);
-      return;
-    }
-
-    // hide controls on mobile when auto-scroll starts
-    if (isMobile) setControlsVisible(false);
-
-    const step = (time) => {
-      const currentRoot = getRootForScroll();
-      if (!isAutoScrollingRef.current || isUserScrollingRef.current) {
-        if (rafRef.current) {
-          cancelAnimationFrame(rafRef.current);
-          rafRef.current = null;
+    const unsubscribe = motionSpring.on("change", (v) => {
+      const root = getRootForScroll();
+      const writeTo = Math.round(v || 0);
+      try {
+        if (
+          root === window ||
+          root === document.scrollingElement ||
+          root === document.documentElement
+        ) {
+          window.scrollTo({ top: writeTo });
+        } else {
+          root.scrollTo({ top: writeTo });
         }
-        frameAccumulatorRef.current = 0;
-        smoothingRef.current.velocity = 0;
-        isAutoScrollingRef.current = false;
-        setIsAutoScrolling(false);
+      } catch {
+        setScrollTop(root, writeTo);
+      }
+    });
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [motionSpring, getRootForScroll, setScrollTop]);
+
+  // helper - wait until max scroll increases (new content loaded) or timeout
+  const waitForScrollIncrease = useCallback(
+    (prevMax, timeoutMs = 10000, pollInterval = 200) =>
+      new Promise((resolve) => {
+        const start = Date.now();
+        const check = () => {
+          const root = getRootForScroll();
+          const nowMax = getMaxScroll(root);
+          if (nowMax > prevMax + 2) {
+            resolve(true);
+            return;
+          }
+          if (Date.now() - start >= timeoutMs) {
+            resolve(false);
+            return;
+          }
+          if (!isAutoScrollingRef.current) {
+            // if auto-scroll was canceled externally, abort
+            resolve(false);
+            return;
+          }
+          setTimeout(check, pollInterval);
+        };
+        check();
+      }),
+    [getRootForScroll, getMaxScroll]
+  );
+
+  // continuous loop: animate to bottom, when reached loadNextChapter(), wait for new content, continue
+  const startContinuousAutoScroll = useCallback(
+    async ({ speedMultiplier = 1 } = {}) => {
+      if (reducedMotion) {
+        // respect reduced motion preference: do nothing
         return;
       }
 
-      const frameDuration = 1000 / (fpsLimitRef.current || 60);
-      const since = time - lastFrameTimeRef.current;
+      // cancel any existing
+      continuousLoopAbortRef.current = false;
+      if (
+        fmAnimationRef.current &&
+        typeof fmAnimationRef.current.stop === "function"
+      ) {
+        try {
+          fmAnimationRef.current.stop();
+        } catch (e) {}
+        fmAnimationRef.current = null;
+      }
 
-      if (since < 0) {
-        lastFrameTimeRef.current = time;
-      } else {
-        frameAccumulatorRef.current += since;
+      const root = getRootForScroll();
+      let startPos = getScrollTop(root);
+      let maxPos = getMaxScroll(root);
 
-        if (frameAccumulatorRef.current >= frameDuration) {
-          const adjustedDelta = handleFrameSkip(
-            frameAccumulatorRef.current,
-            frameDuration
-          );
-
-          const moveAmount = (scrollSpeed * adjustedDelta) / 16;
-          virtualScrollPosRef.current += moveAmount;
-
-          const domPos = getScrollTop(currentRoot);
-          const maxScrollPos = getMaxScroll(currentRoot);
-          const target = Math.min(virtualScrollPosRef.current, maxScrollPos);
-          const diff = target - domPos;
-
-          const adaptiveLerp = getAdaptiveLerpFactor(diff);
-
-          let finalLerp = adaptiveLerp;
-          const proximityThreshold = 5;
-          if (Math.abs(diff) < proximityThreshold && Math.abs(diff) > 0.5) {
-            // Apply dampening when very close to target
-            finalLerp = adaptiveLerp * 0.6;
-            smoothingRef.current.velocity *= smoothingRef.current.damping;
-          }
-
-          const cap = smoothingRef.current.maxStepPerFrame;
-          const clamped = Math.max(-cap, Math.min(cap, diff));
-          const applied = domPos + clamped * finalLerp;
-          const writeTo = Math.round(applied);
-
-          lastScrollDeltaRef.current = writeTo - domPos;
-          smoothingRef.current.velocity = lastScrollDeltaRef.current;
-
-          try {
-            if (
-              currentRoot === window ||
-              currentRoot === document.scrollingElement ||
-              currentRoot === document.documentElement
-            ) {
-              window.scrollTo({ top: writeTo });
-            } else {
-              currentRoot.scrollTo({ top: writeTo });
-            }
-          } catch (err) {
-            setScrollTop(currentRoot, writeTo);
-          }
-
-          frameAccumulatorRef.current -= frameDuration;
-          lastFrameTimeRef.current = time;
+      // if not enough scrollable area, try to load next chapter and wait
+      if (maxPos - startPos <= 5) {
+        loadNextChapter();
+        const increased = await waitForScrollIncrease(maxPos, 8000);
+        if (!increased) {
+          // nothing to scroll; abort
+          return;
         }
+        maxPos = getMaxScroll(root);
       }
 
-      rafRef.current = requestAnimationFrame(step);
-    };
+      isAutoScrollingRef.current = true;
+      setIsAutoScrolling(true);
+      if (isMobile) setControlsVisible(false);
 
-    rafRef.current = requestAnimationFrame(step);
+      // we use a loop that continues while isAutoScrollingRef true and not aborted
+      while (isAutoScrollingRef.current && !continuousLoopAbortRef.current) {
+        // re-evaluate root, start, max
+        const currentRoot = getRootForScroll();
+        startPos = getScrollTop(currentRoot);
+        maxPos = getMaxScroll(currentRoot);
 
-    return () => {
+        // nothing to scroll => try load next and wait
+        if (maxPos - startPos <= 5) {
+          // If no more chapters to load, break
+          loadNextChapter();
+          const increased = await waitForScrollIncrease(maxPos, 10000);
+          if (!increased) {
+            // no new content or user stopped => break loop
+            break;
+          }
+          // continue to next iteration to recalc start/max
+          continue;
+        }
+
+        // compute duration (seconds) based on px/sec
+        const distance = Math.max(0, maxPos - startPos);
+        const pxPerSec = BASE_SPEED_PX_PER_SEC * Math.max(0.1, speedMultiplier);
+        const durationSec = Math.max(0.2, distance / pxPerSec);
+
+        // create a promise that resolves onComplete or rejects on stop
+        const animPromise = new Promise((resolve) => {
+          // cancel older animation if present
+          if (
+            fmAnimationRef.current &&
+            typeof fmAnimationRef.current.stop === "function"
+          ) {
+            try {
+              fmAnimationRef.current.stop();
+            } catch (e) {}
+            fmAnimationRef.current = null;
+          }
+
+          fmAnimationRef.current = animate(startPos, maxPos, {
+            duration: durationSec,
+            ease: "linear",
+            onUpdate: (v) => {
+              // write into motionPos; spring will smooth then write to DOM
+              motionPos.set(v);
+            },
+            onComplete: () => {
+              fmAnimationRef.current = null;
+              resolve(true);
+            },
+          });
+        });
+
+        // await completion or abort early when user interrupts
+        const finished = await Promise.race([
+          animPromise,
+          new Promise((resolve) => {
+            const poll = () => {
+              if (
+                !isAutoScrollingRef.current ||
+                continuousLoopAbortRef.current
+              ) {
+                // stopped externally: stop animation and resolve false
+                if (
+                  fmAnimationRef.current &&
+                  typeof fmAnimationRef.current.stop === "function"
+                ) {
+                  try {
+                    fmAnimationRef.current.stop();
+                  } catch (e) {}
+                  fmAnimationRef.current = null;
+                }
+                resolve(false);
+                return;
+              }
+              setTimeout(poll, 100);
+            };
+            poll();
+          }),
+        ]);
+
+        if (!finished) break;
+
+        // reached bottom: attempt to load next chapter and continue loop
+        loadNextChapter();
+
+        // wait for scroll height to increase (new pages loaded), or timeout
+        const newMax = getMaxScroll(getRootForScroll());
+        const increased = await waitForScrollIncrease(newMax, 10000);
+        if (!increased) {
+          // no new content loaded OR user stopped => break
+          break;
+        }
+
+        // loop continues automatically and will recalc start/max
+      }
+
+      // cleanup after loop
+      if (
+        fmAnimationRef.current &&
+        typeof fmAnimationRef.current.stop === "function"
+      ) {
+        try {
+          fmAnimationRef.current.stop();
+        } catch (e) {}
+        fmAnimationRef.current = null;
+      }
       isAutoScrollingRef.current = false;
-      if (rafRef.current) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
-      frameAccumulatorRef.current = 0;
-      smoothingRef.current.velocity = 0;
+      setIsAutoScrolling(false);
       if (!isMobile) setControlsVisible(true);
-    };
-  }, [
-    isAutoScrolling,
-    scrollSpeed,
-    fpsLimit,
-    isMobile,
-    getRootForScroll,
-    getScrollTop,
-    getMaxScroll,
-    loadNextChapter,
-    setScrollTop,
-  ]);
+    },
+    [
+      reducedMotion,
+      getRootForScroll,
+      getScrollTop,
+      getMaxScroll,
+      loadNextChapter,
+      waitForScrollIncrease,
+      motionPos,
+      isMobile,
+    ]
+  );
 
-  // cleanup
-  useEffect(() => {
-    return () => {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      if (userScrollTimeoutRef.current)
-        clearTimeout(userScrollTimeoutRef.current);
-      if (viewportObserverRef.current) viewportObserverRef.current.disconnect();
-      if (containerObserverRef.current)
-        containerObserverRef.current.disconnect();
-      viewportObserverRef.current = null;
-      containerObserverRef.current = null;
-    };
-  }, []);
+  const stopAutoScroll = useCallback(() => {
+    continuousLoopAbortRef.current = true;
+    if (
+      fmAnimationRef.current &&
+      typeof fmAnimationRef.current.stop === "function"
+    ) {
+      try {
+        fmAnimationRef.current.stop();
+      } catch (e) {}
+      fmAnimationRef.current = null;
+    }
+    isAutoScrollingRef.current = false;
+    setIsAutoScrolling(false);
+    if (!isMobile) setControlsVisible(true);
+  }, [isMobile]);
 
+  // toggle wrapper
   function toggleAutoScroll() {
     const root = getRootForScroll();
     const max = getMaxScroll(root);
@@ -573,14 +653,11 @@ export default function ChapterReader({
     }
 
     const newValue = !isAutoScrollingRef.current;
-    isAutoScrollingRef.current = newValue;
-    setIsAutoScrolling(newValue);
     if (newValue) {
-      if (isMobile) setControlsVisible(false);
-      virtualScrollPosRef.current = getScrollTop(getRootForScroll());
-      lastFrameTimeRef.current = performance.now();
+      // start continuous auto-scroll
+      startContinuousAutoScroll({ speedMultiplier: scrollSpeed });
     } else {
-      if (!isMobile) setControlsVisible(true);
+      stopAutoScroll();
     }
   }
 
@@ -700,6 +777,34 @@ export default function ChapterReader({
   // UI hide when mobile + auto-scroll OR user hid controls
   const hideUiOnMobile = isMobile && (!controlsVisible || isAutoScrolling);
   const containerPadding = isMobile ? "px-0 py-0" : "px-4 py-10 sm:px-8";
+
+  // small effect to detect mobile width
+  useEffect(() => {
+    const onResize = () => {
+      setIsMobile(window.innerWidth <= MOBILE_BREAKPOINT);
+    };
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // cleanup
+  useEffect(() => {
+    return () => {
+      if (
+        fmAnimationRef.current &&
+        typeof fmAnimationRef.current.stop === "function"
+      )
+        fmAnimationRef.current.stop();
+      if (userScrollTimeoutRef.current)
+        clearTimeout(userScrollTimeoutRef.current);
+      if (viewportObserverRef.current) viewportObserverRef.current.disconnect();
+      if (containerObserverRef.current)
+        containerObserverRef.current.disconnect();
+      viewportObserverRef.current = null;
+      containerObserverRef.current = null;
+    };
+  }, []);
 
   return (
     <div className="flex flex-1 flex-col gap-4">
@@ -880,9 +985,9 @@ export default function ChapterReader({
                     style={{
                       background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${
                         ((scrollSpeed - 0.5) / 10) * 100
-                      }%, #d1d5db ${
-                        ((scrollSpeed - 0.5) / 4.5) * 100
-                      }%, #d1d5db 100%)`,
+                      }%, #d1d5db ${(((scrollSpeed - 0.5) / 4.5) * 100).toFixed(
+                        2
+                      )}%, #d1d5db 100%)`,
                     }}
                   />
                   <span className="min-w-10 text-xs font-semibold text-zinc-700 dark:text-zinc-300">
